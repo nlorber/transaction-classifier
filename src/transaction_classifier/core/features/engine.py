@@ -329,7 +329,9 @@ class DomainFeatureEngine:
             ht = amt / (1 + rate)
             remainder = (ht - np.round(ht)).abs()
             label = f"{rate:.3f}".replace(".", "")
-            data[f"vat_compatible_{label}"] = (remainder <= cfg.tolerance).astype(int)
+            data[f"vat_compatible_{label}"] = ((remainder <= cfg.tolerance) & (amt > 0)).astype(
+                int
+            )
 
         return pd.DataFrame(data)
 
@@ -415,8 +417,11 @@ class DomainFeatureEngine:
             # Derived feature rules
             for derived_name, rule in sf.derived_features.items():
                 extracted = field_values[i].get(rule.source_field, "")
-                if rule.rule == "starts_with" and extracted.startswith(rule.value):
-                    derived[derived_name][i] = 1
+                if rule.rule == "starts_with":
+                    if extracted.upper().startswith(rule.value.upper()):
+                        derived[derived_name][i] = 1
+                else:
+                    raise ValueError(f"Unknown derived feature rule: {rule.rule!r}")
 
         data: dict[str, Any] = {}
         for field_name in sf.field_patterns:

@@ -636,6 +636,27 @@ class TestVatSignals:
         )
         assert result["vat_compatible_0200"].iloc[0] == 0
 
+    def test_vat_zero_amount_not_compatible(self, engine: DomainFeatureEngine) -> None:
+        """Zero-amount rows should NOT be flagged as VAT-compatible."""
+        df = pd.DataFrame(
+            {
+                "description": ["Test"],
+                "remarks": [""],
+                "amount": [0.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        for col in result.columns:
+            if col.startswith("vat_compatible_"):
+                assert result[col].iloc[0] == 0, f"{col} should be 0 for zero amount"
+
     def test_vat_signal_column_names(self, engine: DomainFeatureEngine) -> None:
         expected = [
             "vat_compatible_0200",
