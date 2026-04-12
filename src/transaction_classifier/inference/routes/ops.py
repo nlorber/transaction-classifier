@@ -15,44 +15,31 @@ router = APIRouter(prefix="/ops", tags=["ops"], dependencies=[Depends(require_ad
 
 
 @router.post("/refresh")
-def refresh_model(request: Request, client_id: str | None = None) -> dict[str, Any]:
-    """Force-reload model(s) from disk.
-
-    Pass ``?client_id=<id>`` to reload a single client; omit to reload all.
-    """
+def refresh_model(request: Request) -> dict[str, Any]:
+    """Force-reload model from disk."""
     settings = request.app.state.settings
     if settings.sandbox_mode:
-        return {"status": "sandbox", "clients": []}
+        return {"status": "sandbox"}
 
-    loaders = request.app.state.loaders
-    engines = request.app.state.engines
+    store = request.app.state.store
+    try:
+        from ...core.features.engine import DomainFeatureEngine
 
-    targets = [client_id] if client_id else list(loaders.keys())
-    reloaded = []
-    for cid in targets:
-        ldr = loaders.get(cid)
-        if ldr is None:
-            raise HTTPException(status_code=404, detail=f"Unknown client: '{cid}'")
-        try:
-            from ...core.features.engine import DomainFeatureEngine
+        domain_engine = DomainFeatureEngine(settings.feature_profile)
+        predictor = reload_predictor(store, settings.default_top_k, domain_engine)
+        request.app.state.predictor = predictor
+        logger.info("Reloaded model → %s", predictor.bundle.manifest.version)
+    except FileNotFoundError as err:
+        raise HTTPException(status_code=404, detail="No model artifacts found") from err
+    except Exception as err:
+        logger.exception("Reload failed")
+        raise HTTPException(status_code=500, detail="Reload failed") from err
 
-            domain_engine = DomainFeatureEngine(settings.feature_profile)
-            engine = reload_predictor(ldr, settings.default_top_k, domain_engine)
-            engines[cid] = engine
-            logger.info("Reloaded %s → %s", cid, engine.bundle.manifest.version)
-            reloaded.append({"client_id": cid, "model_version": engine.bundle.manifest.version})
-        except FileNotFoundError as err:
-            raise HTTPException(status_code=404, detail=f"No model artifacts for '{cid}'") from err
-        except Exception as err:
-            logger.exception("Reload failed for %s", cid)
-            raise HTTPException(status_code=500, detail=f"Reload failed for '{cid}'") from err
-
-    return {"status": "reloaded", "clients": reloaded}
+    return {"status": "reloaded", "model_version": predictor.bundle.manifest.version}
 
 
-@router.post("/confidence-histogram/{client_id}")
+@router.post("/confidence-histogram")
 def confidence_histogram(
-    client_id: str,
     body: ClassifyRequest,
     request: Request,
     n_bins: int = 10,
@@ -66,28 +53,26 @@ def confidence_histogram(
     if settings.sandbox_mode:
         raise HTTPException(status_code=400, detail="Not available in sandbox mode")
 
-    engines = request.app.state.engines
-    if client_id not in engines:
-        raise HTTPException(status_code=503, detail=f"No model loaded for '{client_id}'")
+    predictor = request.app.state.predictor
+    if predictor is None:
+        raise HTTPException(status_code=503, detail="No model loaded")
 
-    engine = engines[client_id]
-    frame = engine.build_frame(body.transactions)
+    frame = predictor.build_frame(body.transactions)
     from ...core.features.pipeline import assemble_feature_matrix
 
-    if engine.domain_engine is None:
+    if predictor.domain_engine is None:
         raise HTTPException(status_code=500, detail="domain_engine not configured")
     X = assemble_feature_matrix(
-        frame, engine.bundle.text_extractor, engine.domain_engine, fit=False
+        frame, predictor.bundle.text_extractor, predictor.domain_engine, fit=False
     )
-    proba = engine.bundle.model.predict_proba(X)
+    proba = predictor.bundle.model.predict_proba(X)
 
     max_conf = np.max(proba, axis=1)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     counts, _ = np.histogram(max_conf, bins=edges)
 
     return {
-        "client_id": client_id,
-        "model_version": engine.bundle.manifest.version,
+        "model_version": predictor.bundle.manifest.version,
         "n_samples": len(body.transactions),
         "mean_confidence": round(float(max_conf.mean()), 4),
         "median_confidence": round(float(np.median(max_conf)), 4),

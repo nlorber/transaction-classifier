@@ -22,9 +22,8 @@ _SANDBOX_CONTRIBUTIONS = [
 ]
 
 
-@router.post("/explain/{client_id}", response_model=ExplainResponse)
+@router.post("/explain", response_model=ExplainResponse)
 def explain(
-    client_id: str,
     body: ClassifyRequest,
     request: Request,
     max_features: int = Query(default=10, ge=1, le=50),
@@ -55,16 +54,12 @@ def explain(
         ]
         return ExplainResponse(results=items, model_version="sandbox")
 
-    engines = request.app.state.engines
-    if client_id not in engines:
-        if client_id not in request.app.state.loaders:
-            raise HTTPException(status_code=404, detail=f"Unknown client: '{client_id}'")
-        raise HTTPException(status_code=503, detail=f"No model loaded for client '{client_id}'")
-
-    engine = engines[client_id]
+    predictor = request.app.state.predictor
+    if predictor is None:
+        raise HTTPException(status_code=503, detail="No model loaded")
 
     try:
-        items = engine.explain(
+        items = predictor.explain(
             body.transactions,
             max_features=max_features,
             target_class=target_class,
@@ -82,5 +77,5 @@ def explain(
 
     return ExplainResponse(
         results=items,
-        model_version=engine.bundle.manifest.version,
+        model_version=predictor.bundle.manifest.version,
     )

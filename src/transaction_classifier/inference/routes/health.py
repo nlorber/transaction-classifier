@@ -23,8 +23,7 @@ def health(request: Request) -> StatusResponse:
             uptime_seconds=time.time() - boot,
         )
 
-    engines = request.app.state.engines
-    loaded = len(engines) > 0
+    loaded = request.app.state.predictor is not None
 
     return StatusResponse(
         status="healthy" if loaded else "degraded",
@@ -35,10 +34,10 @@ def health(request: Request) -> StatusResponse:
 
 @router.get("/ready", response_model=None)
 def ready(request: Request) -> dict[str, bool] | JSONResponse:
-    """Readiness check — 200 only when at least one model is serving."""
+    """Readiness check — 200 only when the model is serving."""
     if request.app.state.settings.sandbox_mode:
         return {"ready": True}
 
-    if not request.app.state.engines:
+    if request.app.state.predictor is None:
         return JSONResponse({"ready": False}, status_code=503)
     return {"ready": True}

@@ -16,8 +16,8 @@ def sandbox_client():
     app = FastAPI()
     settings = Settings(sandbox_mode=True)
     app.state.settings = settings
-    app.state.engines = {}
-    app.state.loaders = {}
+    app.state.predictor = None
+    app.state.store = None
     app.state.start_time = time.time()
 
     app.include_router(classify.router)
@@ -32,7 +32,7 @@ class TestSandboxPredict:
 
     def test_predict_returns_fixed_response(self, sandbox_client):
         resp = sandbox_client.post(
-            "/classify/sandbox",
+            "/classify",
             json={
                 "transactions": [{"description": "TEST TRANSACTION"}],
             },
@@ -49,7 +49,7 @@ class TestSandboxPredict:
 
     def test_predict_batch_returns_one_result_per_transaction(self, sandbox_client):
         resp = sandbox_client.post(
-            "/classify/sandbox",
+            "/classify",
             json={
                 "transactions": [
                     {"description": "TX 1"},
@@ -64,7 +64,7 @@ class TestSandboxPredict:
 
     def test_predict_respects_top_k(self, sandbox_client):
         resp = sandbox_client.post(
-            "/classify/sandbox",
+            "/classify",
             json={
                 "transactions": [{"description": "TEST"}],
                 "top_k": 1,
@@ -77,7 +77,7 @@ class TestSandboxPredict:
 
     def test_predict_top_k_above_default_returns_requested_count(self, sandbox_client):
         resp = sandbox_client.post(
-            "/classify/sandbox",
+            "/classify",
             json={
                 "transactions": [{"description": "TEST"}],
                 "top_k": 10,
@@ -112,4 +112,3 @@ class TestSandboxAdmin:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "sandbox"
-        assert data["clients"] == []

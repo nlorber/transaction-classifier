@@ -15,8 +15,6 @@ from transaction_classifier.core.models.xgboost_model import XGBoostModel
 from transaction_classifier.inference.predictor import Predictor
 from transaction_classifier.inference.routes import classify, health, ops
 
-_CLIENT_ID = "test_client"
-
 
 @pytest.fixture()
 def domain_engine():
@@ -49,8 +47,8 @@ def client_with_model(sample_df, domain_engine):
         # Build a minimal app without lifespan (avoids async background task issues)
         app = FastAPI()
         engine = Predictor(bundle, default_top_k=3, domain_engine=domain_engine)
-        app.state.engines = {_CLIENT_ID: engine}
-        app.state.loaders = {_CLIENT_ID: store}
+        app.state.predictor = engine
+        app.state.store = store
         app.state.settings = Settings(artifact_dir=tmpdir)
         app.state.start_time = time.time()
 
@@ -71,7 +69,7 @@ def test_health_endpoint(client_with_model):
 
 def test_predict_single(client_with_model):
     resp = client_with_model.post(
-        f"/classify/{_CLIENT_ID}",
+        "/classify",
         json={
             "transactions": [
                 {
@@ -96,7 +94,7 @@ def test_predict_single(client_with_model):
 
 def test_predict_batch(client_with_model):
     resp = client_with_model.post(
-        f"/classify/{_CLIENT_ID}",
+        "/classify",
         json={
             "transactions": [
                 {"description": "URSSAF", "posting_date": "2025-01-15", "debit": 100},
@@ -113,14 +111,12 @@ def test_predict_batch(client_with_model):
 
 
 def test_predict_missing_description(client_with_model):
-    resp = client_with_model.post(
-        f"/classify/{_CLIENT_ID}", json={"transactions": [{"debit": 100}]}
-    )
+    resp = client_with_model.post("/classify", json={"transactions": [{"debit": 100}]})
     assert resp.status_code == 422
 
 
 def test_predict_empty_batch_returns_422(client_with_model):
-    resp = client_with_model.post(f"/classify/{_CLIENT_ID}", json={"transactions": []})
+    resp = client_with_model.post("/classify", json={"transactions": []})
     assert resp.status_code == 422
 
 
@@ -128,7 +124,7 @@ def test_predict_batch_exceeds_max_size(client_with_model):
     settings = client_with_model.app.state.settings
     settings.batch_limit = 5
     resp = client_with_model.post(
-        f"/classify/{_CLIENT_ID}",
+        "/classify",
         json={
             "transactions": [{"description": f"TX {i}"} for i in range(6)],
         },
@@ -142,7 +138,7 @@ def test_predict_batch_at_max_size(client_with_model):
     settings = client_with_model.app.state.settings
     settings.batch_limit = 3
     resp = client_with_model.post(
-        f"/classify/{_CLIENT_ID}",
+        "/classify",
         json={
             "transactions": [{"description": f"TX {i}"} for i in range(3)],
         },
@@ -150,16 +146,6 @@ def test_predict_batch_at_max_size(client_with_model):
     assert resp.status_code == 200
     assert len(resp.json()["results"]) == 3
     settings.batch_limit = 100  # reset
-
-
-def test_predict_unknown_client_returns_404(client_with_model):
-    resp = client_with_model.post(
-        "/classify/unknown_client",
-        json={
-            "transactions": [{"description": "URSSAF COTISATIONS", "debit": 100}],
-        },
-    )
-    assert resp.status_code == 404
 
 
 def test_ready_endpoint(client_with_model):
@@ -184,7 +170,7 @@ class TestAuthEnforcement:
 
     def test_predict_requires_key(self, client_with_auth):
         resp = client_with_auth.post(
-            f"/classify/{_CLIENT_ID}",
+            "/classify",
             json={
                 "transactions": [{"description": "TEST"}],
             },
@@ -193,7 +179,7 @@ class TestAuthEnforcement:
 
     def test_predict_with_valid_key(self, client_with_auth):
         resp = client_with_auth.post(
-            f"/classify/{_CLIENT_ID}",
+            "/classify",
             json={"transactions": [{"description": "URSSAF COTISATIONS", "debit": 100}]},
             headers={"X-API-Key": "test-predict-key"},
         )

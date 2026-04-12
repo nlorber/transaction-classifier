@@ -46,8 +46,8 @@ def ops_app(sample_df, domain_engine):
     loader = MagicMock(spec=ModelStore)
 
     app = FastAPI()
-    app.state.engines = {"demo": engine}
-    app.state.loaders = {"demo": loader}
+    app.state.predictor = engine
+    app.state.store = loader
     app.state.settings = Settings(sandbox_mode=False)
     app.state.start_time = time.time()
     app.include_router(ops.router)
@@ -58,7 +58,7 @@ def ops_app(sample_df, domain_engine):
 class TestRefresh:
     """POST /ops/refresh endpoint."""
 
-    def test_refresh_all_clients(self, ops_app):
+    def test_refresh(self, ops_app):
         client, loader, engine = ops_app
         with patch(
             "transaction_classifier.inference.routes.ops.reload_predictor", return_value=engine
@@ -67,23 +67,7 @@ class TestRefresh:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "reloaded"
-        assert len(data["clients"]) == 1
-        assert data["clients"][0]["client_id"] == "demo"
-
-    def test_refresh_specific_client(self, ops_app):
-        client, loader, engine = ops_app
-        with patch(
-            "transaction_classifier.inference.routes.ops.reload_predictor", return_value=engine
-        ):
-            resp = client.post("/ops/refresh", params={"client_id": "demo"})
-        assert resp.status_code == 200
-        assert resp.json()["clients"][0]["client_id"] == "demo"
-
-    def test_refresh_unknown_client_returns_404(self, ops_app):
-        client, _, _ = ops_app
-        resp = client.post("/ops/refresh", params={"client_id": "unknown"})
-        assert resp.status_code == 404
-        assert "unknown" in resp.json()["detail"].lower()
+        assert data["model_version"] == "v-test"
 
     def test_refresh_file_not_found_returns_404(self, ops_app):
         client, _, _ = ops_app
@@ -91,7 +75,7 @@ class TestRefresh:
             "transaction_classifier.inference.routes.ops.reload_predictor",
             side_effect=FileNotFoundError("no artifacts"),
         ):
-            resp = client.post("/ops/refresh", params={"client_id": "demo"})
+            resp = client.post("/ops/refresh")
         assert resp.status_code == 404
 
     def test_refresh_generic_error_returns_500(self, ops_app):
@@ -100,9 +84,8 @@ class TestRefresh:
             "transaction_classifier.inference.routes.ops.reload_predictor",
             side_effect=RuntimeError("boom"),
         ):
-            resp = client.post("/ops/refresh", params={"client_id": "demo"})
+            resp = client.post("/ops/refresh")
         assert resp.status_code == 500
-        assert "demo" in resp.json()["detail"]
 
     def test_refresh_sandbox_mode_is_noop(self, ops_app):
         client, _, _ = ops_app
@@ -114,12 +97,12 @@ class TestRefresh:
 
 
 class TestConfidenceHistogram:
-    """POST /ops/confidence-histogram/{client_id} endpoint."""
+    """POST /ops/confidence-histogram endpoint."""
 
     def test_histogram_returns_valid_structure(self, ops_app):
         client, _, _ = ops_app
         resp = client.post(
-            "/ops/confidence-histogram/demo",
+            "/ops/confidence-histogram",
             json={
                 "transactions": [
                     {"description": "URSSAF COTISATIONS", "debit": 1234.56},
@@ -129,7 +112,6 @@ class TestConfidenceHistogram:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["client_id"] == "demo"
         assert data["n_samples"] == 2
         assert 0 <= data["mean_confidence"] <= 1
         assert 0 <= data["median_confidence"] <= 1
@@ -140,17 +122,18 @@ class TestConfidenceHistogram:
     def test_histogram_custom_bins(self, ops_app):
         client, _, _ = ops_app
         resp = client.post(
-            "/ops/confidence-histogram/demo",
+            "/ops/confidence-histogram",
             params={"n_bins": 5},
             json={"transactions": [{"description": "TEST", "debit": 100}]},
         )
         assert resp.status_code == 200
         assert len(resp.json()["histogram"]["bin_edges"]) == 6  # 5 bins + 1
 
-    def test_histogram_unknown_client_returns_503(self, ops_app):
+    def test_histogram_no_model_returns_503(self, ops_app):
         client, _, _ = ops_app
+        client.app.state.predictor = None
         resp = client.post(
-            "/ops/confidence-histogram/unknown",
+            "/ops/confidence-histogram",
             json={"transactions": [{"description": "TEST"}]},
         )
         assert resp.status_code == 503
@@ -159,7 +142,7 @@ class TestConfidenceHistogram:
         client, _, _ = ops_app
         client.app.state.settings.sandbox_mode = True
         resp = client.post(
-            "/ops/confidence-histogram/demo",
+            "/ops/confidence-histogram",
             json={"transactions": [{"description": "TEST"}]},
         )
         assert resp.status_code == 400

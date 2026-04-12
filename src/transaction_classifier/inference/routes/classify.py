@@ -21,8 +21,8 @@ _SANDBOX_ITEMS = [
 ]
 
 
-@router.post("/classify/{client_id}", response_model=ClassifyResponse)
-def classify(client_id: str, body: ClassifyRequest, request: Request) -> ClassifyResponse:
+@router.post("/classify", response_model=ClassifyResponse)
+def classify(body: ClassifyRequest, request: Request) -> ClassifyResponse:
     """Predict accounting codes for one or more transactions."""
     settings = request.app.state.settings
 
@@ -40,15 +40,12 @@ def classify(client_id: str, body: ClassifyRequest, request: Request) -> Classif
         ]
         return ClassifyResponse(results=items, model_version="sandbox")
 
-    engines = request.app.state.engines
-    if client_id not in engines:
-        if client_id not in request.app.state.loaders:
-            raise HTTPException(status_code=404, detail=f"Unknown client: '{client_id}'")
-        raise HTTPException(status_code=503, detail=f"No model loaded for client '{client_id}'")
+    predictor = request.app.state.predictor
+    if predictor is None:
+        raise HTTPException(status_code=503, detail="No model loaded")
 
-    engine = engines[client_id]
-    items = engine.classify(body.transactions, top_k=body.top_k)
+    items = predictor.classify(body.transactions, top_k=body.top_k)
     return ClassifyResponse(
         results=items,
-        model_version=engine.bundle.manifest.version,
+        model_version=predictor.bundle.manifest.version,
     )
