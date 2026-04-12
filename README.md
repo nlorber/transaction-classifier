@@ -52,8 +52,7 @@ XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperpar
 ## Why This Design
 
 - **Temporal train/val split** — no random shuffle. _In production, you predict future transactions from past patterns; random splits leak future information and inflate metrics._
-- **Atomic symlink promotion** — new model artifacts land in a versioned directory; a symlink swap makes them live. _Prevents serving half-written model files during deployment, which caused silent prediction failures in a multi-client system._
-- **Per-client schema isolation** — each client gets its own Postgres schema and model artifacts. _Adapted from a system where cross-client data contamination was a compliance violation._
+- **Atomic symlink promotion** — new model artifacts land in a versioned directory; a symlink swap makes them live. _Prevents serving half-written model files during deployment._
 - **Quality gate before promotion** — floor thresholds (not targets) block catastrophically bad models. _Catches cold-start scenarios where sparse training data produces a model worse than the previous version._
 - **Hot-reload with in-flight completion** — polling + old predictor stays alive until current requests finish. _Zero-downtime model updates without a load balancer or blue-green deployment._
 
@@ -62,7 +61,7 @@ XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperpar
 ```mermaid
 flowchart LR
     subgraph Data Sources
-        PG[(Postgres\nper-client schema)]
+        PG[(Postgres)]
         CSV[(CSV\nlocal dev)]
     end
 
@@ -84,7 +83,7 @@ flowchart LR
     end
 
     subgraph Serving
-        API[FastAPI\nmulti-client, hot-reload]
+        API[FastAPI\nhot-reload]
     end
 
     PG --> TF
@@ -109,13 +108,13 @@ flowchart LR
 
 ## Design Decisions
 
-**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (80 classes, long-tail distribution). Gradient-boosted trees handle this natively without the sampling gymnastics or architecture tuning that neural nets require. Training completes in seconds, not hours, which matters when retraining per-client models on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
+**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (80 classes, long-tail distribution). Gradient-boosted trees handle this natively without the sampling gymnastics or architecture tuning that neural nets require. Training completes in seconds, not hours, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
 
 **Why TF-IDF + domain features, not embeddings.** French accounting transaction text is formulaic: `URSSAF COTISATIONS`, `PRLV SEPA CPY:FR123`. Pattern-based features (entity detection, regex-extracted markers) outperform dense embeddings because the signal is in known keywords and structural patterns, not semantic meaning. TF-IDF character n-grams capture morphological variations (e.g., `COTISATION` vs `COTISATIONS`) without a pretrained language model. The feature space is sparse but highly discriminative for this domain.
 
 **Why temporal split over random split.** Financial transactions are sequential. A random split leaks information: the model sees January and March during training, then "predicts" February during evaluation. Temporal splitting (train on earlier months, evaluate on later months) reflects real deployment conditions where the model always predicts future transactions. This gives honest metrics and catches temporal drift.
 
-**Why multi-client architecture.** Each client (company) has their own chart of accounts and labeling conventions. A shared model would conflate `401000` across clients where it means different things. Per-client data isolation (separate Postgres schemas, separate model directories) keeps training and inference independent. The same codebase and pipeline serves all clients --- no per-client forks.
+**Why single-tenant.** This system targets a single accounting entity's transaction data. The feature profile (`config/profiles/`) is the extension point for different domains or countries --- create a new profile rather than a new client.
 
 **Why artifact versioning with atomic symlink promotion.** Model updates must be zero-downtime. Each training run produces a timestamped artifact directory (`v-20260301-120000/`) containing the model, vectorizers, label encoder, and a manifest with checksums. Promotion is an atomic `symlink` swap of the `current` pointer. The serving layer watches this symlink and hot-reloads on change. If a new model fails validation, the old symlink stays --- no broken state.
 
@@ -158,12 +157,12 @@ uv run tc-train --auto-promote -v
 # Start the prediction API (sandbox mode: no model required for local demo)
 TXCLS_SANDBOX_MODE=true uv run tc-serve
 
-# With a trained model and clients.yaml configured (requires models/current symlink
+# With a trained model (requires models/current symlink
 # created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current):
 # uv run tc-serve
 
 # Predict
-curl -X POST http://localhost:8000/classify/sample \
+curl -X POST http://localhost:8000/classify \
   -H "Content-Type: application/json" \
   -d '{
     "transactions": [
@@ -184,7 +183,7 @@ curl -X POST http://localhost:8000/classify/sample \
 src/transaction_classifier/
   core/                  — shared ML code used by both training and inference
     config.py            — Pydantic settings (TXCLS_ prefix)
-    data/                — data providers: CSV, Postgres, ClientRegistry
+    data/                — data providers: CSV, Postgres
     features/            — feature pipeline: text.py, engine.py, standard.py, pipeline.py
     models/              — XGBoostModel wrapper, training logic
     evaluation/          — classification report computation
@@ -228,9 +227,6 @@ HPO uses Optuna with Bayesian search (TPE sampler) over XGBoost parameters.
 ```bash
 # Run 20 trials
 uv run tc-hpo run --n-trials 20 -v
-
-# Run on a specific client
-uv run tc-hpo run --client acme_corp --n-trials 50 -v
 ```
 
 Search space includes `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `min_child_weight`, `reg_alpha`, `reg_lambda`, and `n_estimators`. Results are saved as an Optuna study with best parameters printed at completion.
@@ -248,16 +244,14 @@ TXCLS_PG_ROW_LIMIT=50000 \
   docker compose --profile train run --rm --build train --auto-promote -v
 ```
 
-`clients.yaml` is bind-mounted from the project root. The file must exist before starting the container.
-
 ## API Reference
 
-### `POST /classify/{client_id}`
+### `POST /classify`
 
 Batch prediction. Returns top-K account code suggestions with confidence scores.
 
 ```bash
-curl -X POST http://localhost:8000/classify/sample \
+curl -X POST http://localhost:8000/classify \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
   -d '{
@@ -292,7 +286,7 @@ Response:
 
 ### `GET /health`
 
-Liveness probe. Returns status, model load state, and uptime. `"healthy"` when at least one model is loaded, `"degraded"` otherwise.
+Liveness probe. Returns status, model load state, and uptime. `"healthy"` when the model is loaded, `"degraded"` otherwise.
 
 ```json
 {"status": "healthy", "model_loaded": true, "uptime_seconds": 123.4}
@@ -304,7 +298,7 @@ curl http://localhost:8000/health
 
 ### `GET /ready`
 
-Readiness probe. Returns `200` if ready, `503` if no models are loaded.
+Readiness probe. Returns `200` if ready, `503` if the model is not loaded.
 
 ```bash
 curl http://localhost:8000/ready
@@ -317,18 +311,14 @@ Trigger a manual model reload. Requires an admin API key.
 ```bash
 curl -X POST http://localhost:8000/ops/refresh \
   -H "X-API-Key: your-admin-key"
-
-# Reload a specific client
-curl -X POST "http://localhost:8000/ops/refresh?client_id=acme_corp" \
-  -H "X-API-Key: your-admin-key"
 ```
 
-### `POST /ops/confidence-histogram/{client_id}`
+### `POST /ops/confidence-histogram`
 
 Confidence distribution for a batch of transactions. Useful for monitoring prediction drift over time.
 
 ```bash
-curl -X POST http://localhost:8000/ops/confidence-histogram/sample \
+curl -X POST http://localhost:8000/ops/confidence-histogram \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-admin-key" \
   -d '{
@@ -347,7 +337,6 @@ Response:
 
 ```json
 {
-  "client_id": "sample",
   "model_version": "v-20260301-120000",
   "n_samples": 1,
   "mean_confidence": 0.87,
@@ -359,12 +348,12 @@ Response:
 }
 ```
 
-### `POST /explain/{client_id}`
+### `POST /explain`
 
 Per-transaction SHAP feature contributions. Returns the top features that drove the model toward each prediction. Requires the `explain` extra (`uv sync --extra explain`).
 
 ```bash
-curl -X POST "http://localhost:8000/explain/sample?max_features=5" \
+curl -X POST "http://localhost:8000/explain?max_features=5" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
   -d '{
