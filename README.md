@@ -147,7 +147,7 @@ uv run tc-train --auto-promote -v
 TXCLS_SANDBOX_MODE=true uv run tc-serve
 
 # With a trained model and clients.yaml configured (requires models/current symlink
-# created by --auto-promote, or manually via: ln -sf models/v_XXXXXXXX_XXXXXX models/current):
+# created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current):
 # uv run tc-serve
 
 # Predict

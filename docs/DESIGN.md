@@ -326,7 +326,7 @@ def _matches_any(provided: str, valid_keys: list[str]) -> bool:
     )
 ```
 
-Note: the `any()` short-circuits on the first match, so an attacker can infer how many keys exist by timing. This is acceptable for an internal service with a small key list. For a public-facing API, use a single hashed key with constant-time lookup.
+Note: the `any()` short-circuits on the first match, so an attacker can infer how many keys exist by timing. This is acceptable for a private API with a small key list. For a public-facing API, use a single hashed key with constant-time lookup.
 
 ### Dev mode bypass
 
@@ -352,7 +352,7 @@ The `/explain/{client_id}` endpoint uses SHAP `TreeExplainer` to decompose each 
 
 SHAP is an optional dependency (`explain` extra). The endpoint lazy-imports it and returns HTTP 501 if unavailable, keeping the core serving image lightweight. `TreeExplainer` is created per-request rather than cached — explanation workloads are lower-volume than classification, and caching a `TreeExplainer` across model reloads would require invalidation logic that isn't warranted.
 
-Feature names are resolved by `collect_feature_names()` in `core/features/pipeline.py`, which maps each column index to a human-readable name (e.g., `desc_urssaf`, `ent_social_contributions`, `fiscal_urssaf_window`). This function derives names by calling `TfidfFeatureExtractor.feature_names_out()` and `DomainFeatureEngine.feature_names`, ensuring the name order matches the matrix column order produced by `assemble_feature_matrix`.
+Feature names are resolved by `collect_feature_names()` in `core/features/pipeline.py`, which maps each column index to a human-readable name (e.g., `desc_urssaf`, `ent_social_contributions`, `fiscal_urssaf_window`). This function derives names by calling `TfidfFeatureExtractor.feature_names` and `DomainFeatureEngine.feature_names`, ensuring the name order matches the matrix column order produced by `assemble_feature_matrix`.
 
 ---
 
@@ -393,8 +393,7 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 |-----------|-------|-----------|
 | `tfidf_max_label` | 4,000 | `description` is a short label (5-30 words). 4K features provide headroom for larger vocabularies on real-world data (grid search showed saturation below 1K on synthetic data). |
 | `tfidf_max_detail` | 4,000 | `remarks` can contain SEPA details and HTML. Set equal to label --- grid search found no benefit from asymmetric sizing. |
-| `tfidf_max_char` | 1,000 | Character n-grams capture morphological patterns. Grid search identified 1K as optimal (outperforms both 500 and 2K+). |
-| `tfidf_max_char` | 2,000 | Character n-grams (3-5) on the combined text. 2K is sufficient to capture morphological patterns and handles misspellings/abbreviations that word-level tokenization misses. |
+| `tfidf_max_char` | 1,000 | Character n-grams (3-5) on the combined text. Grid search identified 1K as optimal --- captures morphological patterns and handles misspellings/abbreviations that word-level tokenization misses. |
 
 ### Data split
 
