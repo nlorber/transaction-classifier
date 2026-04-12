@@ -25,13 +25,13 @@ dependencies = [
 
 [project.optional-dependencies]
 train = ["click>=8.1.0,<9", "psycopg2-binary>=2.9.0,<3"]
-serve = ["fastapi>=0.115.0,<1", "uvicorn[standard]>=0.34.0,<1", "click>=8.1.0,<9"]
+serve = ["fastapi>=0.115.0,<1", "uvicorn[standard]>=0.34.0,<1", "click>=8.1.0,<9", "watchdog>=4.0,<6"]
 hpo = ["optuna>=4.0,<5", "optuna-integration>=4.0,<5", "plotly>=6.0,<7", "kaleido>=0.2"]
 explain = ["shap>=0.46,<1"]
 compare = ["lightgbm>=4.0,<5"]
 all = [
     "click>=8.1.0,<9", "psycopg2-binary>=2.9.0,<3",
-    "fastapi>=0.115.0,<1", "uvicorn[standard]>=0.34.0,<1",
+    "fastapi>=0.115.0,<1", "uvicorn[standard]>=0.34.0,<1", "watchdog>=4.0,<6",
     "optuna>=4.0,<5", "optuna-integration>=4.0,<5", "plotly>=6.0,<7", "kaleido>=0.2",
     "shap>=0.46,<1",
     "lightgbm>=4.0,<5",
@@ -108,5 +108,6 @@ module = [
     "optuna_integration.*",
     "shap",
     "scipy.*",
+    "watchdog.*",
 ]
 ignore_missing_imports = true
