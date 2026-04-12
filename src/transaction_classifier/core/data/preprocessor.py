@@ -60,7 +60,6 @@ def clean_html_for_extraction(text: str) -> str:
     """
     if not text or text == NULL_SENTINEL or str(text).lower() == "nan":
         return ""
-    from html import unescape
 
     decoded = unescape(str(text)).replace("&nbsp;", " ")
     return re.sub(r"\s+", " ", decoded).strip()
