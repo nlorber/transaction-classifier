@@ -43,8 +43,8 @@ def explain_app(sample_df, domain_engine):
     engine = Predictor(bundle, default_top_k=3, domain_engine=domain_engine)
 
     app = FastAPI()
-    app.state.engines = {"demo": engine}
-    app.state.loaders = {"demo": MagicMock()}
+    app.state.predictor = engine
+    app.state.store = MagicMock()
     app.state.settings = Settings(sandbox_mode=False)
     app.state.start_time = time.time()
     app.include_router(explain.router)
@@ -53,12 +53,12 @@ def explain_app(sample_df, domain_engine):
 
 
 class TestExplainEndpoint:
-    """POST /explain/{client_id}."""
+    """POST /explain."""
 
     def test_returns_contributions(self, explain_app):
         pytest.importorskip("shap")
         resp = explain_app.post(
-            "/explain/demo",
+            "/explain",
             json={"transactions": [{"description": "URSSAF COTISATIONS", "debit": 1234.56}]},
         )
         assert resp.status_code == 200
@@ -72,19 +72,20 @@ class TestExplainEndpoint:
     def test_max_features_param(self, explain_app):
         pytest.importorskip("shap")
         resp = explain_app.post(
-            "/explain/demo",
+            "/explain",
             params={"max_features": 3},
             json={"transactions": [{"description": "EDF FACTURE", "debit": 89.0}]},
         )
         assert resp.status_code == 200
         assert len(resp.json()["results"][0]["contributions"]) <= 3
 
-    def test_unknown_client_returns_404(self, explain_app):
+    def test_no_predictor_returns_503(self, explain_app):
+        explain_app.app.state.predictor = None
         resp = explain_app.post(
-            "/explain/unknown",
+            "/explain",
             json={"transactions": [{"description": "TEST"}]},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 503
 
     def test_shap_not_installed_returns_501(self, explain_app):
         with patch(
@@ -92,7 +93,7 @@ class TestExplainEndpoint:
             side_effect=ImportError("No module named 'shap'"),
         ):
             resp = explain_app.post(
-                "/explain/demo",
+                "/explain",
                 json={"transactions": [{"description": "TEST"}]},
             )
             assert resp.status_code == 501
@@ -100,7 +101,7 @@ class TestExplainEndpoint:
     def test_sandbox_mode_returns_fixed_response(self, explain_app):
         explain_app.app.state.settings.sandbox_mode = True
         resp = explain_app.post(
-            "/explain/demo",
+            "/explain",
             json={"transactions": [{"description": "TEST"}]},
         )
         assert resp.status_code == 200
@@ -112,7 +113,7 @@ class TestExplainEndpoint:
     def test_invalid_target_class_returns_422(self, explain_app):
         pytest.importorskip("shap")
         resp = explain_app.post(
-            "/explain/demo",
+            "/explain",
             params={"target_class": "999999"},
             json={"transactions": [{"description": "TEST"}]},
         )

@@ -209,36 +209,7 @@ class TestLoadAndPrepareData:
         from transaction_classifier.core.config import Settings
 
         settings = Settings(data_path=str(sample_csv_path), min_class_samples=1)
-        X_train, y_train, X_val, y_val, n_classes = load_and_prepare_data(settings, client_id=None)
+        X_train, y_train, X_val, y_val, n_classes = load_and_prepare_data(settings)
         assert X_train.shape[0] > 0
         assert len(y_train) == X_train.shape[0]
         assert n_classes > 0
-
-    def test_unknown_client_raises(self, tmp_path, monkeypatch):
-        """Verify that an unknown client_id raises ClickException."""
-        import yaml
-        from click import ClickException
-
-        from transaction_classifier.core.config import Settings
-
-        registry_path = tmp_path / "clients.yaml"
-        registry_path.write_text(
-            yaml.dump(
-                {
-                    "clients": [
-                        {
-                            "id": "known",
-                            "database_url": "postgresql://localhost/db",
-                            "schema": "sch1",
-                        },
-                    ]
-                }
-            )
-        )
-
-        settings = Settings(client_registry_path=str(registry_path))
-
-        import pytest
-
-        with pytest.raises(ClickException, match="Unknown client"):
-            load_and_prepare_data(settings, client_id="unknown_client")

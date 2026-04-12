@@ -115,24 +115,3 @@ def test_postgres_source_raises_if_psycopg2_missing():
         pytest.raises(ImportError, match="psycopg2-binary is required"),
     ):
         PostgresDataSource("postgresql://user:pass@host/db", query=_QUERY).fetch()
-
-
-# --- ClientConfig tests ---
-
-
-def test_client_config_without_query():
-    from transaction_classifier.core.data.registry import ClientConfig
-
-    config = ClientConfig(client_id="c1", db_url="postgresql://x")
-    assert config.query is None
-
-
-def test_client_config_with_query():
-    from transaction_classifier.core.data.registry import ClientConfig
-
-    config = ClientConfig(
-        client_id="c1",
-        db_url="postgresql://x",
-        query="SELECT * FROM t LIMIT %(limit)s",
-    )
-    assert config.query == "SELECT * FROM t LIMIT %(limit)s"

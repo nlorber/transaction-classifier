@@ -9,7 +9,6 @@ import click
 from sklearn.preprocessing import LabelEncoder
 
 from ...core.config import Settings
-from ...core.data.registry import ClientRegistry
 from ...core.data.source import CsvDataSource, DataSource, PostgresDataSource
 from ...core.data.splitter import split_by_date
 from ...core.features.engine import DomainFeatureEngine
@@ -24,25 +23,14 @@ logger = logging.getLogger(__name__)
 
 def load_and_prepare_data(
     settings: Settings,
-    client_id: str | None,
 ) -> tuple[Any, Any, Any, Any, int]:
     """Ingest data, split, encode, and build features for HPO."""
     provider: DataSource
-    if client_id:
-        catalog = ClientRegistry(settings.client_registry_path)  # type: ignore[attr-defined]  # Task 4 refactor
-        entry = catalog.get(client_id)
-        if entry is None:
-            raise click.ClickException(f"Unknown client: {client_id}")
-        if entry.query is None:
-            raise click.ClickException(
-                f"Client {entry.client_id} has no query configured in clients.yaml"
-            )
+    if settings.pg_dsn:
         provider = PostgresDataSource(
-            entry.db_url,
-            query=entry.query,
-            row_limit=settings.pg_row_limit,
+            settings.pg_dsn, query=settings.pg_query, row_limit=settings.pg_row_limit
         )
-        logger.info("Fetching data for client %s …", entry.client_id)
+        logger.info("Fetching data from Postgres …")
     else:
         provider = CsvDataSource(settings.data_path)
         logger.info("Fetching data from CSV: %s …", settings.data_path)
@@ -85,19 +73,12 @@ def hpo() -> None:
 
 
 @hpo.command()
-@click.option(
-    "--client",
-    "client_id",
-    default=None,
-    help="Client ID (uses Postgres). Omit for CSV.",
-)
 @click.option("--n-trials", default=200, type=int, help="Max number of trials")
 @click.option("--timeout", default=28800, type=int, help="Max seconds (default: 8h)")
 @click.option("--storage", default="results/hpo.db", help="SQLite storage path")
 @click.option("--study-name", default=None, help="Study name (auto-generated if omitted)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
 def run(
-    client_id: str | None,
     n_trials: int,
     timeout: int,
     storage: str,
@@ -112,9 +93,9 @@ def run(
         logging.getLogger("optuna").setLevel(logging.WARNING)
 
     settings = Settings()
-    X_train, y_train, X_val, y_val, n_classes = load_and_prepare_data(settings, client_id)
+    X_train, y_train, X_val, y_val, n_classes = load_and_prepare_data(settings)
 
-    study_name = study_name or f"hpo_{client_id or 'csv'}_{date.today()}"
+    study_name = study_name or f"hpo_{date.today()}"
     storage_path = Path(storage)
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     storage_url = f"sqlite:///{storage_path}"

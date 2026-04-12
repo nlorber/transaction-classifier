@@ -2,29 +2,16 @@
 
 from unittest.mock import MagicMock, patch
 
-import yaml
 from click.testing import CliRunner
 
 from transaction_classifier.training.cli import train
-
-_QUERY = "SELECT * FROM transactions LIMIT %(limit)s"
-
-
-def _write_registry(path, clients):
-    path.write_text(yaml.dump({"clients": clients}))
-    return str(path)
 
 
 class TestAutoPromote:
     """Tests for the --auto-promote flag."""
 
     def test_auto_promote_succeeds_when_validation_passes(self, tmp_path, monkeypatch):
-        registry_path = _write_registry(
-            tmp_path / "clients.yaml",
-            [{"id": "c1", "database_url": "postgresql://localhost/db", "query": _QUERY}],
-        )
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", registry_path)
-        monkeypatch.setenv("TXCLS_ARTIFACT_DIR", str(tmp_path / "models"))
+        monkeypatch.setenv("TXCLS_DATA_PATH", str(tmp_path / "data.csv"))
 
         def fake_execute(self):
             m = MagicMock()
@@ -43,17 +30,12 @@ class TestAutoPromote:
             mock_gate.check.return_value = MagicMock(passed=True)
             MockGate.return_value = mock_gate
 
-            result = CliRunner().invoke(train, ["--client", "c1", "--auto-promote"])
+            result = CliRunner().invoke(train, ["--auto-promote"])
 
         assert result.exit_code == 0
 
     def test_auto_promote_exits_1_when_validation_fails(self, tmp_path, monkeypatch):
-        registry_path = _write_registry(
-            tmp_path / "clients.yaml",
-            [{"id": "c1", "database_url": "postgresql://localhost/db", "query": _QUERY}],
-        )
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", registry_path)
-        monkeypatch.setenv("TXCLS_ARTIFACT_DIR", str(tmp_path / "models"))
+        monkeypatch.setenv("TXCLS_DATA_PATH", str(tmp_path / "data.csv"))
 
         def fake_execute(self):
             m = MagicMock()
@@ -71,7 +53,7 @@ class TestAutoPromote:
             mock_gate.check.return_value = MagicMock(passed=False)
             MockGate.return_value = mock_gate
 
-            result = CliRunner().invoke(train, ["--client", "c1", "--auto-promote"])
+            result = CliRunner().invoke(train, ["--auto-promote"])
 
         assert result.exit_code == 1
 
@@ -80,11 +62,7 @@ class TestSettingsOverrides:
     """Tests for CLI flags that override Settings values."""
 
     def test_overrides_data_path_and_artifact_dir(self, tmp_path, monkeypatch):
-        # No clients configured -> CSV fallback path
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", str(tmp_path / "empty.yaml"))
-        (tmp_path / "empty.yaml").write_text(yaml.dump({"clients": []}))
-
-        captured_settings = {}
+        captured_settings: dict[str, str] = {}
 
         def fake_execute(self):
             captured_settings["data_path"] = self.settings.data_path
@@ -106,10 +84,9 @@ class TestSettingsOverrides:
         assert captured_settings["artifact_dir"] == "/custom/models"
 
     def test_overrides_min_samples_and_n_estimators(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", str(tmp_path / "empty.yaml"))
-        (tmp_path / "empty.yaml").write_text(yaml.dump({"clients": []}))
+        monkeypatch.setenv("TXCLS_DATA_PATH", str(tmp_path / "data.csv"))
 
-        captured_settings = {}
+        captured_settings: dict[str, int] = {}
 
         def fake_execute(self):
             captured_settings["min_samples"] = self.settings.min_class_samples
@@ -132,12 +109,11 @@ class TestSettingsOverrides:
 
 
 class TestCSVFallback:
-    """Tests for the no-clients CSV fallback path."""
+    """Tests for the CSV data source path (default when no pg_dsn)."""
 
-    def test_csv_fallback_when_no_clients(self, tmp_path, monkeypatch):
-        """When no clients in registry, falls back to CSV data source."""
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", str(tmp_path / "empty.yaml"))
-        (tmp_path / "empty.yaml").write_text(yaml.dump({"clients": []}))
+    def test_csv_path_when_no_pg_dsn(self, tmp_path, monkeypatch):
+        """When pg_dsn is empty, uses CSV data source."""
+        monkeypatch.setenv("TXCLS_DATA_PATH", str(tmp_path / "data.csv"))
 
         def fake_execute(self):
             m = MagicMock()
@@ -151,9 +127,8 @@ class TestCSVFallback:
 
         assert result.exit_code == 0
 
-    def test_csv_fallback_exits_1_on_failure(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", str(tmp_path / "empty.yaml"))
-        (tmp_path / "empty.yaml").write_text(yaml.dump({"clients": []}))
+    def test_csv_path_exits_1_on_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TXCLS_DATA_PATH", str(tmp_path / "data.csv"))
 
         def fake_execute(self):
             raise RuntimeError("CSV not found")
@@ -169,10 +144,7 @@ class TestCSVFallback:
 class TestHPODelegation:
     """Tests for the --hpo flag that delegates to hpo run."""
 
-    def test_hpo_flag_invokes_hpo_run(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TXCLS_CLIENT_REGISTRY_PATH", str(tmp_path / "empty.yaml"))
-        (tmp_path / "empty.yaml").write_text(yaml.dump({"clients": []}))
-
+    def test_hpo_flag_invokes_hpo_run(self, monkeypatch):
         with patch("transaction_classifier.training.cli.click.Context") as MockCtx:
             mock_ctx = MagicMock()
             MockCtx.return_value = mock_ctx

@@ -65,7 +65,7 @@ def test_load_and_prepare_data_uses_temporal_split(sample_csv_path):
         "transaction_classifier.training.hpo.cli.split_by_date",
         wraps=split_by_date,
     ) as mock_split:
-        load_and_prepare_data(settings, client_id=None)
+        load_and_prepare_data(settings)
         mock_split.assert_called_once()
 
 
