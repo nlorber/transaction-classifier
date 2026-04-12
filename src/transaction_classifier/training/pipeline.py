@@ -2,8 +2,11 @@
 
 import logging
 import time
+from typing import Any
 
+import numpy as np
 import pandas as pd
+from scipy.sparse import spmatrix
 from sklearn.preprocessing import LabelEncoder
 
 from ..core.artifacts.schema import Manifest
@@ -31,11 +34,27 @@ class TrainingPipeline:
     # ------------------------------------------------------------------
 
     def execute(self) -> tuple[Manifest, float, int]:
-        """Run the full pipeline and return the saved bundle's manifest."""
+        """Run the full pipeline and return (manifest, baseline_accuracy, n_classes)."""
         cfg = self.settings
         set_seed(cfg.random_state)
 
-        # 1 — Ingest data
+        df = self._ingest()
+        train_df, val_df, stats = self._split(df)
+        le, y_train, y_val, val_known, baseline = self._encode_labels(train_df, val_df)
+        extractor, engine, X_train, X_val = self._build_features(cfg, train_df, val_known)
+        model, train_secs = self._train(cfg, X_train, y_train, X_val, y_val)
+        metrics = self._evaluate(model, X_val, y_val)
+        manifest = self._persist(
+            model, extractor, le, metrics, stats, len(val_known), X_train, train_secs
+        )
+        return manifest, baseline, len(le.classes_)
+
+    # ------------------------------------------------------------------
+    # Private pipeline steps
+    # ------------------------------------------------------------------
+
+    def _ingest(self) -> pd.DataFrame:
+        cfg = self.settings
         logger.info("Fetching data from %s …", cfg.data_path)
         t0 = time.time()
         df = self.provider.fetch(
@@ -48,8 +67,10 @@ class TrainingPipeline:
             df["target"].nunique(),
             time.time() - t0,
         )
+        return df
 
-        # 2 — Temporal split
+    def _split(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+        cfg = self.settings
         logger.info("Splitting (temporal, ratio=%.2f) …", cfg.train_ratio)
         train_df, val_df = split_by_date(df, train_ratio=cfg.train_ratio)
         stats = temporal_partition_stats(train_df, val_df)
@@ -59,21 +80,36 @@ class TrainingPipeline:
             stats["val_rows"],
             stats["train_n_classes"],
         )
+        return train_df, val_df, stats
 
-        # 3 — Encode labels
+    def _encode_labels(
+        self, train_df: pd.DataFrame, val_df: pd.DataFrame
+    ) -> tuple[
+        LabelEncoder,
+        np.ndarray[Any, np.dtype[Any]],
+        np.ndarray[Any, np.dtype[Any]],
+        pd.DataFrame,
+        float,
+    ]:
         le = LabelEncoder()
-        y_train = le.fit_transform(train_df["target"])
-        baseline_accuracy = float(pd.Series(y_train).value_counts(normalize=True).iloc[0])
+        y_train: np.ndarray[Any, np.dtype[Any]] = le.fit_transform(train_df["target"])
+        baseline = float(pd.Series(y_train).value_counts(normalize=True).iloc[0])
         known_mask = val_df["target"].isin(le.classes_)
         val_known = val_df[known_mask]
-        y_val = le.transform(val_known["target"])
+        y_val: np.ndarray[Any, np.dtype[Any]] = le.transform(val_known["target"])
         if len(val_known) < len(val_df):
             logger.warning(
                 "Excluded %d val rows with unseen classes",
                 len(val_df) - len(val_known),
             )
+        return le, y_train, y_val, val_known, baseline
 
-        # 4 — Build features
+    def _build_features(
+        self,
+        cfg: Settings,
+        train_df: pd.DataFrame,
+        val_df: pd.DataFrame,
+    ) -> tuple[TfidfFeatureExtractor, DomainFeatureEngine, spmatrix, spmatrix]:
         logger.info("Building features …")
         t0 = time.time()
         extractor = TfidfFeatureExtractor(
@@ -81,12 +117,20 @@ class TrainingPipeline:
             detail_vocab_size=cfg.tfidf_max_detail,
             char_vocab_size=cfg.tfidf_max_char,
         )
-        domain_engine = DomainFeatureEngine(cfg.feature_profile)
-        X_train = assemble_feature_matrix(train_df, extractor, domain_engine, fit=True)
-        X_val = assemble_feature_matrix(val_known, extractor, domain_engine, fit=False)
+        engine = DomainFeatureEngine(cfg.feature_profile)
+        X_train = assemble_feature_matrix(train_df, extractor, engine, fit=True)  # noqa: N806
+        X_val = assemble_feature_matrix(val_df, extractor, engine, fit=False)  # noqa: N806
         logger.info("Feature shape: %s (%.1fs)", X_train.shape, time.time() - t0)
+        return extractor, engine, X_train, X_val
 
-        # 5 — Train model
+    def _train(
+        self,
+        cfg: Settings,
+        X_train: spmatrix,  # noqa: N803
+        y_train: np.ndarray[Any, np.dtype[Any]],
+        X_val: spmatrix,  # noqa: N803
+        y_val: np.ndarray[Any, np.dtype[Any]],
+    ) -> tuple[XGBoostModel, float]:
         logger.info(
             "Training XGBoostModel (%d rounds, depth=%d) …",
             cfg.n_estimators,
@@ -107,20 +151,37 @@ class TrainingPipeline:
         model.fit(X_train, y_train, X_val=X_val, y_val=y_val)
         train_secs = time.time() - t0
         logger.info("Training finished (%.1fs)", train_secs)
+        return model, train_secs
 
-        # 6 — Evaluate
+    def _evaluate(
+        self,
+        model: XGBoostModel,
+        X_val: spmatrix,  # noqa: N803
+        y_val: np.ndarray[Any, np.dtype[Any]],
+    ) -> dict[str, Any]:
         logger.info("Evaluating on validation set …")
         y_hat = model.predict(X_val)
         report = evaluate_predictions(y_val, y_hat)
-        metrics_dict = report._asdict()
         logger.info(
             "Val accuracy=%.4f balanced=%.4f f1_weighted=%.4f",
             report.accuracy,
             report.balanced_accuracy,
             report.f1_weighted,
         )
+        return report._asdict()
 
-        # 7 — Persist artefacts
+    def _persist(
+        self,
+        model: XGBoostModel,
+        extractor: TfidfFeatureExtractor,
+        le: LabelEncoder,
+        metrics: dict[str, Any],
+        stats: dict[str, Any],
+        val_rows: int,
+        X_train: spmatrix,  # noqa: N803
+        train_secs: float,
+    ) -> Manifest:
+        cfg = self.settings
         logger.info("Storing artefacts …")
         store = ModelStore(cfg.artifact_dir)
         run_config = {
@@ -137,7 +198,7 @@ class TrainingPipeline:
             "random_state": cfg.random_state,
             "train_ratio": cfg.train_ratio,
             "train_rows": stats["train_rows"],
-            "val_rows": len(val_known),
+            "val_rows": val_rows,
             "num_categories": len(le.classes_),
             "train_seconds": train_secs,
             "env": get_reproducibility_info(),
@@ -146,9 +207,9 @@ class TrainingPipeline:
             model=model,
             text_extractor=extractor,
             label_encoder=le,
-            metrics=metrics_dict,
+            metrics=metrics,
             config=run_config,
             n_features=X_train.shape[1],
         )
         logger.info("Stored version: %s", manifest.version)
-        return manifest, baseline_accuracy, len(le.classes_)
+        return manifest
