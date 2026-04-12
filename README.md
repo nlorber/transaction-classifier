@@ -41,11 +41,11 @@ Same feature matrix, same temporal split. XGBoost is the production choice; Ligh
 
 | Model | Balanced Accuracy | F1 (weighted) | Train time |
 |---|---|---|---|
-| **XGBoost** | **0.4839** | **0.5570** | 32.8s |
-| LightGBM | 0.4128 | 0.5276 | 23.7s |
-| Logistic Regression | 0.0115 | 0.0160 | 43.5s |
+| **XGBoost** | **0.4881** | **0.5528** | 30.0s |
+| LightGBM | 0.4047 | 0.5145 | 26.5s |
+| Logistic Regression | 0.0115 | 0.0160 | 43.4s |
 
-XGBoost outperforms LightGBM by ~7pp on balanced accuracy with the same hyperparameter style. Logistic regression is not competitive on this task — the 80-class problem with sparse TF-IDF features and domain indicators benefits from tree-based feature interactions that linear models cannot capture. Reproduce with `uv run python scripts/compare_models.py`.
+XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperparameter style. Logistic regression is not competitive on this task — the 80-class problem with sparse TF-IDF features and domain indicators benefits from tree-based feature interactions that linear models cannot capture. Reproduce with `uv run python scripts/compare_models.py`.
 
 ![Top-K Accuracy](reports/topk_accuracy.png)
 
@@ -292,7 +292,11 @@ Response:
 
 ### `GET /health`
 
-Liveness probe. Returns `{"status": "healthy"}` when at least one model is loaded, `{"status": "degraded"}` otherwise.
+Liveness probe. Returns status, model load state, and uptime. `"healthy"` when at least one model is loaded, `"degraded"` otherwise.
+
+```json
+{"status": "healthy", "model_loaded": true, "uptime_seconds": 123.4}
+```
 
 ```bash
 curl http://localhost:8000/health
