@@ -103,7 +103,7 @@ def train(
     log = logging.getLogger("transaction_classifier.training")
     log.info("Starting training pipeline")
 
-    catalog = ClientRegistry(settings.client_registry_path)
+    catalog = ClientRegistry(settings.client_registry_path)  # type: ignore[attr-defined]  # Task 4 refactor
     entries = catalog.clients
 
     if entries:

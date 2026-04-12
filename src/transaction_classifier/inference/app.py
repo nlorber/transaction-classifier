@@ -1,6 +1,5 @@
 """FastAPI application factory and lifespan management."""
 
-import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -11,11 +10,10 @@ from fastapi import FastAPI
 
 from ..core.artifacts.store import ModelStore
 from ..core.config import Settings
-from ..core.data.registry import ClientRegistry
 from ..core.features.engine import DomainFeatureEngine
 from ..core.utils.logging import setup_logging
 from .middleware import LatencyMiddleware
-from .predictor import Predictor, reload_predictor
+from .predictor import reload_predictor
 from .routes import classify, explain, health, ops
 
 logger = logging.getLogger(__name__)
@@ -23,59 +21,34 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Load client models on startup; watch for updates in the background."""
+    """Load the model on startup."""
     settings: Settings = app.state.settings
     app.state.start_time = time.time()
 
     if settings.sandbox_mode:
         logger.info("Sandbox mode — model loading skipped")
-        app.state.engines = {}
-        app.state.loaders = {}
+        app.state.predictor = None
+        app.state.store = None
         yield
         return
 
     domain_engine = DomainFeatureEngine(settings.feature_profile)
+    store = ModelStore(Path(settings.artifact_dir))
+    app.state.store = store
 
-    catalog = ClientRegistry(settings.client_registry_path)
-    loaders: dict[str, ModelStore] = {}
-    engines: dict[str, Predictor] = {}
+    try:
+        predictor = reload_predictor(store, settings.default_top_k, domain_engine)
+        app.state.predictor = predictor
+        logger.info(
+            "Loaded model: %s (%d categories)",
+            predictor.bundle.manifest.version,
+            predictor.bundle.manifest.num_categories,
+        )
+    except FileNotFoundError:
+        app.state.predictor = None
+        logger.warning("No model found — will return 503 until a model is trained")
 
-    for entry in catalog.clients:
-        vault_path = Path(settings.artifact_dir) / entry.client_id
-        store = ModelStore(vault_path)
-        loaders[entry.client_id] = store
-        try:
-            engine = reload_predictor(store, settings.default_top_k, domain_engine)
-            engines[entry.client_id] = engine
-            logger.info(
-                "Loaded model for %s: %s (%d categories)",
-                entry.client_id,
-                engine.bundle.manifest.version,
-                engine.bundle.manifest.num_categories,
-            )
-        except FileNotFoundError:
-            logger.warning("No model for client %s — will return 503", entry.client_id)
-
-    app.state.engines = engines
-    app.state.loaders = loaders
-
-    async def _poll_for_updates() -> None:
-        interval = settings.reload_poll_secs
-        while True:
-            await asyncio.sleep(interval)
-            for cid, store in list(loaders.items()):
-                try:
-                    if store.has_update():
-                        logger.info("New version detected for %s, reloading …", cid)
-                        engine = reload_predictor(store, settings.default_top_k, domain_engine)
-                        app.state.engines[cid] = engine
-                        logger.info("Reloaded %s → %s", cid, engine.bundle.manifest.version)
-                except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
-                    logger.warning("Reload failed for %s: %s", cid, exc)
-
-    watcher = asyncio.create_task(_poll_for_updates())
     yield
-    watcher.cancel()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

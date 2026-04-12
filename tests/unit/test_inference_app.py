@@ -1,7 +1,6 @@
 """Tests for the FastAPI application factory and lifespan."""
 
 import tempfile
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -50,13 +49,13 @@ class TestLifespanSandboxMode:
         settings = Settings(sandbox_mode=True)
         app = create_app(settings)
         with TestClient(app):
-            assert app.state.engines == {}
-            assert app.state.loaders == {}
+            assert app.state.predictor is None
+            assert app.state.store is None
 
 
-class TestLifespanWithModels:
-    def test_loads_client_models_on_startup(self, sample_df, domain_engine):
-        """Full lifespan test: create a model, register a client, and start the app."""
+class TestLifespanWithModel:
+    def test_loads_model_on_startup(self, sample_df, domain_engine):
+        """Full lifespan test: create a model in a tmpdir and start the app."""
         from transaction_classifier.core.features.pipeline import assemble_feature_matrix
 
         tf = TfidfFeatureExtractor(
@@ -69,58 +68,23 @@ class TestLifespanWithModels:
         model.fit(X, y)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            client_store = f"{tmpdir}/test_client"
-            store = ModelStore(client_store)
+            store = ModelStore(tmpdir)
             manifest = store.save(model, tf, le, {"accuracy": 0.5}, {})
             store.promote(manifest.version)
 
-            mock_entry = MagicMock()
-            mock_entry.client_id = "test_client"
-
-            mock_catalog = MagicMock()
-            mock_catalog.clients = [mock_entry]
-
-            settings = Settings(
-                sandbox_mode=False,
-                artifact_dir=tmpdir,
-                client_registry_path="unused",
-                reload_poll_secs=9999,
-            )
+            settings = Settings(sandbox_mode=False, artifact_dir=tmpdir)
             app = create_app(settings)
 
-            with (
-                patch(
-                    "transaction_classifier.inference.app.ClientRegistry",
-                    return_value=mock_catalog,
-                ),
-                TestClient(app),
-            ):
-                assert "test_client" in app.state.engines
-                assert "test_client" in app.state.loaders
+            with TestClient(app):
+                assert app.state.predictor is not None
+                assert app.state.store is not None
 
-    def test_missing_model_logs_warning(self):
-        """When a client has no model yet, app starts without crashing."""
-        mock_entry = MagicMock()
-        mock_entry.client_id = "no_model_client"
-
-        mock_catalog = MagicMock()
-        mock_catalog.clients = [mock_entry]
-
+    def test_missing_model_starts_without_crashing(self):
+        """When no model exists, the app starts with predictor=None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            settings = Settings(
-                sandbox_mode=False,
-                artifact_dir=tmpdir,
-                client_registry_path="unused",
-                reload_poll_secs=9999,
-            )
+            settings = Settings(sandbox_mode=False, artifact_dir=tmpdir)
             app = create_app(settings)
 
-            with (
-                patch(
-                    "transaction_classifier.inference.app.ClientRegistry",
-                    return_value=mock_catalog,
-                ),
-                TestClient(app),
-            ):
-                assert "no_model_client" not in app.state.engines
-                assert "no_model_client" in app.state.loaders
+            with TestClient(app):
+                assert app.state.predictor is None
+                assert app.state.store is not None

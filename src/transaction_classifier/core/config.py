@@ -14,7 +14,8 @@ class Settings(BaseSettings):
 
     # --- Data ingestion ----------------------------------------------------
     data_path: str = "data/sample.csv"
-    client_registry_path: str = "clients.yaml"
+    pg_dsn: str = ""
+    pg_query: str = ""
     pg_row_limit: int = 500_000
 
     # --- Label derivation & filtering --------------------------------------
@@ -51,7 +52,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     default_top_k: int = 3
     batch_limit: int = 100
-    reload_poll_secs: int = 30
+    model_watch_debounce_secs: float = 2.0
 
     # --- Auth --------------------------------------------------------------
     api_keys: list[str] = []

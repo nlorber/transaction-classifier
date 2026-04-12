@@ -29,7 +29,7 @@ def load_and_prepare_data(
     """Ingest data, split, encode, and build features for HPO."""
     provider: DataSource
     if client_id:
-        catalog = ClientRegistry(settings.client_registry_path)
+        catalog = ClientRegistry(settings.client_registry_path)  # type: ignore[attr-defined]  # Task 4 refactor
         entry = catalog.get(client_id)
         if entry is None:
             raise click.ClickException(f"Unknown client: {client_id}")
