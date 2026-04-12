@@ -70,10 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         engine = reload_predictor(store, settings.default_top_k, domain_engine)
                         app.state.engines[cid] = engine
                         logger.info("Reloaded %s → %s", cid, engine.bundle.manifest.version)
-                except (FileNotFoundError, ValueError) as exc:
+                except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
                     logger.warning("Reload failed for %s: %s", cid, exc)
-                except Exception:
-                    logger.exception("Reload failed for %s", cid)
 
     watcher = asyncio.create_task(_poll_for_updates())
     yield
