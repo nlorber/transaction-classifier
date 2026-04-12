@@ -1,0 +1,20 @@
+[
+  {
+    "model": "XGBoost",
+    "balanced_accuracy": 0.4839,
+    "f1_weighted": 0.557,
+    "train_seconds": 32.8
+  },
+  {
+    "model": "LightGBM",
+    "balanced_accuracy": 0.4128,
+    "f1_weighted": 0.5276,
+    "train_seconds": 23.7
+  },
+  {
+    "model": "Logistic Regression",
+    "balanced_accuracy": 0.0115,
+    "f1_weighted": 0.016,
+    "train_seconds": 43.5
+  }
+]

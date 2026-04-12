@@ -35,6 +35,18 @@ Cumulative accuracy on the temporal validation split. Each row adds one feature 
 
 Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal.
 
+### Model Comparison
+
+Same feature matrix, same temporal split. XGBoost is the production choice; LightGBM and logistic regression are baselines.
+
+| Model | Balanced Accuracy | F1 (weighted) | Train time |
+|---|---|---|---|
+| **XGBoost** | **0.4839** | **0.5570** | 32.8s |
+| LightGBM | 0.4128 | 0.5276 | 23.7s |
+| Logistic Regression | 0.0115 | 0.0160 | 43.5s |
+
+XGBoost outperforms LightGBM by ~7pp on balanced accuracy with the same hyperparameter style. Logistic regression is not competitive on this task — the 80-class problem with sparse TF-IDF features and domain indicators benefits from tree-based feature interactions that linear models cannot capture. Reproduce with `uv run python scripts/compare_models.py`.
+
 ![Top-K Accuracy](reports/topk_accuracy.png)
 
 ## Why This Design
