@@ -69,16 +69,16 @@ def explain(
             max_features=max_features,
             target_class=target_class,
         )
-    except ImportError:
+    except ImportError as exc:
         raise HTTPException(
             status_code=501,
             detail="shap not installed — install with: uv sync --extra explain",
-        ) from None
-    except (IndexError, KeyError):
+        ) from exc
+    except (IndexError, KeyError) as exc:
         raise HTTPException(
             status_code=422,
             detail=f"Unknown target_class: '{target_class}' is not in the model's label set",
-        ) from None
+        ) from exc
 
     return ExplainResponse(
         results=items,
