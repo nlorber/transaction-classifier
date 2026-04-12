@@ -14,13 +14,13 @@ Trained on **synthetic data** (7,508 transactions, 80 account classes). On real 
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 60.2% |
-| Top-3 accuracy | 83.2% |
-| Top-5 accuracy | 91.1% |
-| Top-10 accuracy | 99.1% |
-| Balanced accuracy | 50.9% |
+| Top-1 accuracy | 58.7% |
+| Top-3 accuracy | 83.0% |
+| Top-5 accuracy | 90.9% |
+| Top-10 accuracy | 98.7% |
+| Balanced accuracy | 49.3% |
 | Classes | 80 |
-| Evaluation samples | 1,127 |
+| Evaluation samples | 1,502 |
 
 ### Feature Ablation
 
@@ -28,10 +28,10 @@ Cumulative accuracy on the temporal validation split. Each row adds one feature 
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5679 | 0.4444 |
-| + numeric | 0.6140 | 0.5084 |
-| + date | 0.6043 | 0.5090 |
-| + domain (all features) | 0.6025 | 0.5087 |
+| TF-IDF only | 0.5546 | 0.4418 |
+| + numeric | 0.5905 | 0.5045 |
+| + date | 0.5792 | 0.4865 |
+| + domain (all features) | 0.5839 | 0.4881 |
 
 Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal.
 
