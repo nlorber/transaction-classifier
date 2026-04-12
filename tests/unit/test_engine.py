@@ -7,7 +7,12 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from transaction_classifier.core.features.engine import DomainFeatureEngine, FeatureProfile
+from transaction_classifier.core.features.engine import (
+    DerivedFeatureRule,
+    DomainFeatureEngine,
+    FeatureProfile,
+    VatSignalConfig,
+)
 
 PROFILE_PATH = Path("config/profiles/french_treasury.yaml")
 
@@ -203,7 +208,7 @@ class TestDomainFeatureEngineAmounts:
             date_col="posting_date",
             comment_col="remarks",
         )
-        # 2500.0 → typical_salary range [1800, 5000]
+        # 2500.0 → typical_salary range [2200, 5500]
         assert result["typical_salary_band"].iloc[1] == 1
         assert result["minimum_wage_band"].iloc[1] == 0
 
@@ -541,6 +546,21 @@ class TestDomainFeatureEngineFeatureNames:
         names = engine.feature_names
         assert len(names) == len(set(names))
 
+    def test_feature_names_contains_vat_signals(self, engine: DomainFeatureEngine) -> None:
+        names = engine.feature_names
+        profile = FeatureProfile.from_yaml(PROFILE_PATH)
+        assert profile.vat_signals is not None
+        for rate in profile.vat_signals.rates:
+            label = f"{rate:.3f}".replace(".", "")
+            assert f"vat_compatible_{label}" in names
+
+    def test_feature_names_contains_derived_features(self, engine: DomainFeatureEngine) -> None:
+        names = engine.feature_names
+        profile = FeatureProfile.from_yaml(PROFILE_PATH)
+        assert profile.structured_fields is not None
+        for derived_name in profile.structured_fields.derived_features:
+            assert derived_name in names
+
     def test_result_index_matches_input_index(
         self, engine: DomainFeatureEngine, sample_engine_df: pd.DataFrame
     ) -> None:
@@ -554,3 +574,252 @@ class TestDomainFeatureEngineFeatureNames:
             comment_col="remarks",
         )
         assert list(result.index) == list(df.index)
+
+
+class TestVatSignals:
+    """VAT round-amount detection."""
+
+    def test_vat_compatible_020_for_round_ht(self, engine: DomainFeatureEngine) -> None:
+        """120.00 / 1.20 = 100.0 (exact integer) -> compatible."""
+        df = pd.DataFrame(
+            {
+                "description": ["Test"],
+                "remarks": [""],
+                "amount": [120.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["vat_compatible_0200"].iloc[0] == 1
+
+    def test_vat_compatible_010_for_round_ht(self, engine: DomainFeatureEngine) -> None:
+        """110.00 / 1.10 = 100.0 (exact integer) -> compatible."""
+        df = pd.DataFrame(
+            {
+                "description": ["Test"],
+                "remarks": [""],
+                "amount": [110.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["vat_compatible_0100"].iloc[0] == 1
+
+    def test_vat_not_compatible_for_non_round_ht(self, engine: DomainFeatureEngine) -> None:
+        """123.45 / 1.20 = 102.875 (not integer) -> not compatible at 20%."""
+        df = pd.DataFrame(
+            {
+                "description": ["Test"],
+                "remarks": [""],
+                "amount": [123.45],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["vat_compatible_0200"].iloc[0] == 0
+
+    def test_vat_signal_column_names(self, engine: DomainFeatureEngine) -> None:
+        expected = [
+            "vat_compatible_0200",
+            "vat_compatible_0100",
+            "vat_compatible_0055",
+            "vat_compatible_0021",
+        ]
+        names = engine.feature_names
+        for col in expected:
+            assert col in names
+
+
+class TestVatSignalConfigValidation:
+    """VatSignalConfig Pydantic validation."""
+
+    def test_valid_rates(self) -> None:
+        cfg = VatSignalConfig(rates=[0.20, 0.10])
+        assert len(cfg.rates) == 2
+
+    def test_rate_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VatSignalConfig(rates=[0.0])
+
+    def test_rate_one_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VatSignalConfig(rates=[1.0])
+
+    def test_negative_rate_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VatSignalConfig(rates=[-0.1])
+
+    def test_default_tolerance(self) -> None:
+        cfg = VatSignalConfig(rates=[0.20])
+        assert cfg.tolerance == 0.005
+
+
+class TestDerivedFeatureRule:
+    """DerivedFeatureRule Pydantic model."""
+
+    def test_valid_rule(self) -> None:
+        rule = DerivedFeatureRule(source_field="ibe", rule="starts_with", value="FR")
+        assert rule.source_field == "ibe"
+
+    def test_invalid_rule_type_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            DerivedFeatureRule(source_field="ibe", rule="contains", value="FR")
+
+
+class TestDerivedFeatures:
+    """Derived feature extraction (is_domestic_iban)."""
+
+    def test_domestic_iban_detected(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["Payment"],
+                "remarks": ["PRLV SEPA IBE :FR7612345678901 NPY :Vendor"],
+                "amount": [100.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["is_domestic_iban"].iloc[0] == 1
+
+    def test_foreign_iban_not_domestic(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["Payment"],
+                "remarks": ["PRLV SEPA IBE :DE89370400440532013000 NPY :Vendor"],
+                "amount": [100.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["is_domestic_iban"].iloc[0] == 0
+
+    def test_no_iban_not_domestic(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["Payment"],
+                "remarks": ["PRLV SEPA NPY :Vendor"],
+                "amount": [100.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["is_domestic_iban"].iloc[0] == 0
+
+
+class TestPaymentProcessorEntity:
+    """Entity detection for consolidated payment_processor entity."""
+
+    def test_paypal_detected(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["PAYPAL PAYMENT"],
+                "remarks": ["paypal transaction ref123"],
+                "amount": [50.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["ent_payment_processor"].iloc[0] == 1
+
+    def test_stripe_detected(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["Stripe payout"],
+                "remarks": ["stripe settlement"],
+                "amount": [200.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["ent_payment_processor"].iloc[0] == 1
+
+    def test_sumup_detected(self, engine: DomainFeatureEngine) -> None:
+        df = pd.DataFrame(
+            {
+                "description": ["SumUp collection"],
+                "remarks": ["sumup daily batch"],
+                "amount": [150.0],
+                "posting_date": pd.to_datetime(["2026-01-15"]),
+            }
+        )
+        result = engine.build(
+            df,
+            text_cols=["remarks", "description"],
+            amount_col="amount",
+            date_col="posting_date",
+            comment_col="remarks",
+        )
+        assert result["ent_payment_processor"].iloc[0] == 1
+
+    def test_no_paypal_entity_column(self, engine: DomainFeatureEngine) -> None:
+        """The old paypal entity should no longer exist as a separate column."""
+        names = engine.feature_names
+        assert "ent_paypal" not in names
+        assert "desc_ent_paypal" not in names
+
+
+class TestSourcesCitation:
+    """Profile sources block loading."""
+
+    def test_sources_loaded(self) -> None:
+        profile = FeatureProfile.from_yaml(PROFILE_PATH)
+        assert len(profile.sources) > 0
+        assert "fiscal_calendar" in profile.sources
+        assert "tva_rates" in profile.sources
+
+    def test_sources_are_urls(self) -> None:
+        profile = FeatureProfile.from_yaml(PROFILE_PATH)
+        for _key, url in profile.sources.items():
+            assert url.startswith("https://")
+
+    def test_empty_sources_valid(self) -> None:
+        profile = FeatureProfile.model_validate({})
+        assert profile.sources == {}

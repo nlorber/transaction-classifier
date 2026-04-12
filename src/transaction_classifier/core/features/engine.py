@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,25 @@ from ..data.preprocessor import clean_html_for_extraction
 
 class EntityConfig(BaseModel):
     patterns: list[str]
+
+
+class DerivedFeatureRule(BaseModel):
+    source_field: str
+    rule: Literal["starts_with"]
+    value: str
+
+
+class VatSignalConfig(BaseModel):
+    rates: list[float]
+    tolerance: float = 0.005
+
+    @field_validator("rates")
+    @classmethod
+    def _rates_positive(cls, v: list[float]) -> list[float]:
+        for r in v:
+            if r <= 0 or r >= 1:
+                raise ValueError(f"VAT rate must be in (0, 1), got {r}")
+        return v
 
 
 class AmountSignalConfig(BaseModel):
@@ -72,16 +91,19 @@ class TransactionModeConfig(BaseModel):
 class StructuredFieldConfig(BaseModel):
     field_patterns: dict[str, str]
     transaction_modes: list[TransactionModeConfig] = Field(default_factory=list)
+    derived_features: dict[str, DerivedFeatureRule] = Field(default_factory=dict)
     default: str = "other"
 
 
 class FeatureProfile(BaseModel):
     """Validated domain feature configuration loaded from YAML."""
 
+    sources: dict[str, str] = Field(default_factory=dict)
     entities: dict[str, EntityConfig] = Field(default_factory=dict)
     amount_signals: AmountSignalConfig | None = None
     fiscal_indicators: dict[str, FiscalIndicatorConfig] = Field(default_factory=dict)
     text_signals: dict[str, str] = Field(default_factory=dict)
+    vat_signals: VatSignalConfig | None = None
     structured_fields: StructuredFieldConfig | None = None
 
     @field_validator("text_signals")
@@ -175,6 +197,16 @@ class DomainFeatureEngine:
                 names.append(f"txn_type_{mode.name}")
             names.append(f"txn_type_{sf.default}")
 
+            # 7. Derived feature columns
+            for derived_name in sf.derived_features:
+                names.append(derived_name)
+
+        # 8. VAT signal columns
+        if self._profile.vat_signals is not None:
+            for rate in self._profile.vat_signals.rates:
+                label = f"{rate:.3f}".replace(".", "")
+                names.append(f"vat_compatible_{label}")
+
         return names
 
     def build(
@@ -221,8 +253,11 @@ class DomainFeatureEngine:
         # 5. Fiscal indicators
         parts.append(self._derive_fiscal_indicators(df[date_col]))
 
-        # 6. Structured field extraction
+        # 6. Structured field extraction (includes derived features)
         parts.append(self._extract_structured_fields(df[comment_col]))
+
+        # 7. VAT signals
+        parts.append(self._compute_vat_signals(df[amount_col]))
 
         result = pd.concat(
             [p.reset_index(drop=True) for p in parts],
@@ -281,6 +316,23 @@ class DomainFeatureEngine:
 
         return pd.DataFrame(data)
 
+    def _compute_vat_signals(self, amount_series: pd.Series[Any]) -> pd.DataFrame:
+        """Check if amount / (1 + rate) yields a round integer for each VAT rate."""
+        if self._profile.vat_signals is None:
+            return pd.DataFrame()
+
+        cfg = self._profile.vat_signals
+        amt = amount_series.abs().fillna(0.0)
+        data: dict[str, Any] = {}
+
+        for rate in cfg.rates:
+            ht = amt / (1 + rate)
+            remainder = (ht - np.round(ht)).abs()
+            label = f"{rate:.3f}".replace(".", "")
+            data[f"vat_compatible_{label}"] = (remainder <= cfg.tolerance).astype(int)
+
+        return pd.DataFrame(data)
+
     def _derive_fiscal_indicators(self, date_series: pd.Series[Any]) -> pd.DataFrame:
         """Binary fiscal indicators derived from a datetime series."""
         data: dict[str, Any] = {}
@@ -322,6 +374,12 @@ class DomainFeatureEngine:
         all_mode_names = [m.name for m in sf.transaction_modes] + [sf.default]
         txn_modes: dict[str, list[int]] = {f"txn_type_{m}": [0] * n for m in all_mode_names}
 
+        # Derived features
+        derived: dict[str, list[int]] = {name: [0] * n for name in sf.derived_features}
+
+        # Track raw extracted values per row for derived feature computation
+        field_values: list[dict[str, str]] = [{} for _ in range(n)]
+
         for i, raw in enumerate(comment_series):
             cleaned = clean_html_for_extraction(str(raw) if not isinstance(raw, str) else raw)
             lowered = cleaned.lower()
@@ -329,9 +387,11 @@ class DomainFeatureEngine:
             # Field pattern extraction
             any_field_matched = False
             for field_name, pattern in self._field_patterns.items():
-                if pattern.search(cleaned):
+                match = pattern.search(cleaned)
+                if match:
                     has_fields[field_name][i] = 1
                     any_field_matched = True
+                    field_values[i][field_name] = match.group(1)
 
             # is_sepa: any field matched OR "sepa" in text
             if any_field_matched or "sepa" in lowered:
@@ -352,10 +412,18 @@ class DomainFeatureEngine:
 
             txn_modes[f"txn_type_{matched_mode}"][i] = 1
 
+            # Derived feature rules
+            for derived_name, rule in sf.derived_features.items():
+                extracted = field_values[i].get(rule.source_field, "")
+                if rule.rule == "starts_with" and extracted.startswith(rule.value):
+                    derived[derived_name][i] = 1
+
         data: dict[str, Any] = {}
         for field_name in sf.field_patterns:
             data[f"has_{field_name}"] = has_fields[field_name]
         data["is_sepa"] = is_sepa
         data.update(txn_modes)
+        for derived_name in sf.derived_features:
+            data[derived_name] = derived[derived_name]
 
         return pd.DataFrame(data)

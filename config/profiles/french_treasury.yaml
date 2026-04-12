@@ -4,14 +4,18 @@
 # classification. These rules encode publicly available knowledge about French
 # fiscal calendars, banking standards, and common transaction patterns.
 #
-# Sources:
-#   - Fiscal calendar: impots.gouv.fr (VAT, corporate tax schedules)
-#   - SEPA field codes: EPC SEPA Credit Transfer / Direct Debit specifications
-#   - SMIC (minimum wage): service-public.fr, updated annually
-#
 # This file is loaded by DomainFeatureEngine at training and serving time.
 # To adapt the system for a different domain, create a new profile following
 # the same schema.
+
+sources:
+  fiscal_calendar: "https://www.impots.gouv.fr/calendrier-fiscal"
+  urssaf_deadlines: "https://www.urssaf.fr/portail/home/employeur"
+  sepa_standards: "https://www.europeanpaymentscouncil.eu/document-library/implementation-guidelines/sepa-credit-transfer-scheme-implementation-guidelines"
+  smic_2026: "https://www.service-public.fr/particuliers/vosdroits/F2300"
+  salary_stats: "https://www.insee.fr/fr/statistiques/serie/001567616"
+  tva_rates: "https://www.economie.gouv.fr/cedef/taux-tva-france"
+  iban_structure: "https://www.swift.com/standards/data-standards/iban-international-bank-account-number"
 
 entities:
   tax_authority:
@@ -24,8 +28,8 @@ entities:
     patterns: ["frais bancaire", "agios", "commission bancaire", "frais de gestion"]
   interest_ops:
     patterns: ["interets", "interet crediteur", "interet debiteur"]
-  paypal:
-    patterns: ["paypal"]
+  payment_processor:
+    patterns: ["paypal", "stripe", "sumup", "gocardless", "mollie"]
   energy_provider:
     patterns: ["edf", "electricite de france", "engie", "gdf"]
   telecom:
@@ -49,8 +53,8 @@ amount_signals:
     large: [5000, 25000]
     major: [25000, null]
   named_ranges:
-    minimum_wage: [1400, 1900]
-    typical_salary: [2000, 6000]
+    minimum_wage: [1450, 1950]
+    typical_salary: [2200, 5500]
   round_divisors: [10, 100, 1000]
   log_clip_max: 7
 
@@ -96,6 +100,10 @@ text_signals:
   channel_cheque: "\\bch[eè]que\\b|\\bchq\\b"
   channel_cash: "\\bespeces\\b|\\bcaisse\\b"
 
+vat_signals:
+  rates: [0.20, 0.10, 0.055, 0.021]
+  tolerance: 0.005
+
 structured_fields:
   field_patterns:
     cpy: "CPY\\s*:\\s*([A-Z0-9]+)"
@@ -123,4 +131,9 @@ structured_fields:
       triggers: ["remise chq", "cheque", "chq"]
     - name: loan
       triggers: ["echeance pret"]
+  derived_features:
+    is_domestic_iban:
+      source_field: ibe
+      rule: starts_with
+      value: FR
   default: other
