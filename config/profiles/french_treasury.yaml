@@ -1,0 +1,126 @@
+# French Treasury Domain Profile
+#
+# Domain-specific feature engineering rules for French financial transaction
+# classification. These rules encode publicly available knowledge about French
+# fiscal calendars, banking standards, and common transaction patterns.
+#
+# Sources:
+#   - Fiscal calendar: impots.gouv.fr (VAT, corporate tax schedules)
+#   - SEPA field codes: EPC SEPA Credit Transfer / Direct Debit specifications
+#   - SMIC (minimum wage): service-public.fr, updated annually
+#
+# This file is loaded by DomainFeatureEngine at training and serving time.
+# To adapt the system for a different domain, create a new profile following
+# the same schema.
+
+entities:
+  tax_authority:
+    patterns: ["dgfip", "tresor public", "impots", "fisc"]
+  social_contributions:
+    patterns: ["urssaf", "cotisations sociales"]
+  employment_agency:
+    patterns: ["pole emploi", "france travail", "assedic"]
+  banking_charges:
+    patterns: ["frais bancaire", "agios", "commission bancaire", "frais de gestion"]
+  interest_ops:
+    patterns: ["interets", "interet crediteur", "interet debiteur"]
+  paypal:
+    patterns: ["paypal"]
+  energy_provider:
+    patterns: ["edf", "electricite de france", "engie", "gdf"]
+  telecom:
+    patterns: ["orange", "sfr", "bouygues", "free mobile", "ovh"]
+  insurance:
+    patterns: ["assurance", "mutuelle", "prevoyance", "axa", "allianz", "maif"]
+  payroll:
+    patterns: ["salaire", "remuneration", "paie", "bulletin"]
+  incoming_payment:
+    patterns: ["reglement client", "encaissement", "paiement recu"]
+  rental:
+    patterns: ["\\bloyer\\b", "\\bbail\\b", "location immobiliere", "charges locatives"]
+  professional_services:
+    patterns: ["\\bhonoraires\\b", "\\bconsultant\\b", "prestation intellectuelle", "expertise"]
+
+amount_signals:
+  buckets:
+    micro: [0, 50]
+    small: [50, 500]
+    medium: [500, 5000]
+    large: [5000, 25000]
+    major: [25000, null]
+  named_ranges:
+    minimum_wage: [1400, 1900]
+    typical_salary: [2000, 6000]
+  round_divisors: [10, 100, 1000]
+  log_clip_max: 7
+
+fiscal_indicators:
+  quarter_end:
+    months: [3, 6, 9, 12]
+  quarter_start:
+    months: [1, 4, 7, 10]
+  year_end:
+    months: [12]
+  year_start:
+    months: [1]
+  month_close:
+    min_day: 25
+  month_open:
+    max_day: 5
+  vat_window:
+    months: [1, 4, 7, 10]
+    min_day: 17
+    max_day: 24
+  corporate_tax_window:
+    months: [3, 6, 9, 12]
+    min_day: 10
+    max_day: 20
+  social_security_window:
+    min_day: 5
+    max_day: 15
+  summer:
+    months: [7, 8]
+
+text_signals:
+  has_reference_code: "ref[.:# ]\\s*\\w{4,}"
+  has_invoice_marker: "facture|fact\\.?\\s*n"
+  has_date_in_text: "\\d{2}[/-]\\d{2}[/-]\\d{2,4}"
+  has_amount_in_text: "\\d+[.,]\\d{2}\\s*(?:eur|€)"
+  mentions_credit_note: "\\bavoir\\b"
+  mentions_deposit: "\\bacompte\\b|\\barrhes\\b"
+  mentions_settlement: "\\bregle?ment\\b|\\bsolde\\b"
+  mentions_subscription: "\\babonnement\\b|\\bcotisation\\b"
+  channel_transfer: "\\bvir(?:ement)?\\b"
+  channel_direct_debit: "\\bprel[eè]vement\\b|\\bprlv\\b"
+  channel_card: "\\bcarte\\b|\\bcb\\b|\\bpaiement\\s+cb\\b"
+  channel_cheque: "\\bch[eè]que\\b|\\bchq\\b"
+  channel_cash: "\\bespeces\\b|\\bcaisse\\b"
+
+structured_fields:
+  field_patterns:
+    cpy: "CPY\\s*:\\s*([A-Z0-9]+)"
+    rum: "RUM\\s*:\\s*([A-Z0-9\\-]+)"
+    ibe: "IBE\\s*:\\s*([A-Z0-9]+)"
+    ref: "REF\\s*:\\s*([A-Z0-9\\-]+)"
+    rcn: "RCN\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    nbe: "NBE\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    npy: "NPY\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    lcc: "LCC\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    lc2: "LC2\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    pdo: "PDO\\s*:\\s*([A-Z]{2})"
+    lib: "LIB\\s*:\\s*([^\\n<]+?)(?:\\s*$|\\s*<|\\s*[A-Z]{3}\\s*:)"
+    bic: "BIC\\s*:\\s*([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)"
+  transaction_modes:
+    - name: direct_debit
+      triggers: ["prlv sepa", "prelevement"]
+    - name: transfer
+      triggers: ["vir sepa", "virement"]
+    - name: card_collection
+      triggers: ["remise cb"]
+    - name: card_payment
+      triggers: ["paiement cb", "carte"]
+    - name: cheque
+      triggers: ["remise chq", "cheque", "chq"]
+    - name: loan
+      triggers: ["echeance pret"]
+  default: other

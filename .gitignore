@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+.serena/
+*.swp
+*.swo
+
+# Environment
+.env
+clients.yaml
+
+# Secrets (defense-in-depth)
+*.key
+*.pem
+*.p12
+credentials.json
+
+# Data & models (large files)
+/models/
+!/models/.gitkeep
+
+# HPO results
+results/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Worktrees
+.worktrees/
+
+# Node (safety)
+node_modules/
+
+# Claude / tooling
+.claude/
+.ruff_cache/
+docs/superpowers/
+
+# Local dev config for Claude Code
+AGENTS.md
+
+

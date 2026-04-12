@@ -1,0 +1,9 @@
+# clients.yaml — registry of clients for multi-client training and serving.
+# Copy to clients.yaml and fill in real values. Do NOT commit clients.yaml.
+clients:
+  - id: acme_corp
+    database_url: postgresql://user:pass@db-host:5432/accounting
+    query: "SELECT account_code, description, reference, remarks, credit, debit, posting_date FROM acme_corp.transactions LIMIT %(limit)s"
+  - id: globex
+    database_url: postgresql://user:pass@db-host:5432/accounting
+    query: "SELECT account_code, description, reference, remarks, credit, debit, posting_date FROM globex.transactions LIMIT %(limit)s"

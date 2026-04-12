@@ -1,0 +1,54 @@
+services:
+  train:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.train
+    volumes:
+      - ${MODEL_STORE_PATH:-./models}:/data/models
+      - ${TXCLS_DATA_PATH:-../data}:/data/input:ro
+      # Multi-client: create clients.yaml at project root before running
+      - ${CLIENTS_CONFIG_FILE:-../clients.yaml}:/run/clients.yaml:ro
+    environment:
+      - TXCLS_ARTIFACT_DIR=/data/models
+      - TXCLS_DATA_PATH=/data/input/sample.csv
+      - TXCLS_CLIENT_REGISTRY_PATH=/run/clients.yaml
+      - TXCLS_PG_ROW_LIMIT=${TXCLS_PG_ROW_LIMIT:-500000}
+      - TXCLS_LOG_FORMAT=json
+    profiles:
+      - train
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.serve
+    volumes:
+      - ${MODEL_STORE_PATH:-./models}:/data/models
+      # Multi-client: create clients.yaml at project root before running
+      - ${CLIENTS_CONFIG_FILE:-../clients.yaml}:/run/clients.yaml:ro
+    environment:
+      - TXCLS_ARTIFACT_DIR=/data/models
+      - TXCLS_CLIENT_REGISTRY_PATH=/run/clients.yaml
+      - TXCLS_LOG_FORMAT=json
+      - TXCLS_LOG_LEVEL=INFO
+      - TXCLS_SANDBOX_MODE=${TXCLS_SANDBOX_MODE:-false}
+      - TXCLS_API_KEYS=${TXCLS_API_KEYS:-[]}
+      - TXCLS_ADMIN_API_KEYS=${TXCLS_ADMIN_API_KEYS:-[]}
+    expose:
+      - "8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:1-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
