@@ -109,6 +109,19 @@ class TfidfFeatureExtractor:
         names.extend(f"chr_{n}" for n in self.vec_char.get_feature_names_out())
         return names
 
+    @classmethod
+    def from_vectors(
+        cls,
+        vectors: dict[str, TfidfVectorizer],
+    ) -> "TfidfFeatureExtractor":
+        """Reconstruct a fitted extractor from previously saved vectorizers."""
+        instance = cls.__new__(cls)
+        instance.vec_label = vectors["label"]
+        instance.vec_detail = vectors["detail"]
+        instance.vec_char = vectors["char"]
+        instance._fitted = True
+        return instance
+
     @property
     def vectorizer_dict(self) -> dict[str, TfidfVectorizer]:
         """Access the underlying fitted vectoriser objects."""

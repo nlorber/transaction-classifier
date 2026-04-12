@@ -188,11 +188,7 @@ class ModelStore:
         model.restore(version_dir / "classifier.json")
 
         vecs = joblib.load(version_dir / "text_features.joblib")
-        extractor = TfidfFeatureExtractor()
-        extractor.vec_label = vecs["label"]
-        extractor.vec_detail = vecs["detail"]
-        extractor.vec_char = vecs["char"]
-        extractor._fitted = True
+        extractor = TfidfFeatureExtractor.from_vectors(vecs)
 
         encoder = joblib.load(version_dir / "label_encoder.joblib")
 
