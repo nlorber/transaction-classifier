@@ -27,13 +27,29 @@ logger = logging.getLogger(__name__)
 @click.option("--model-dir", default="models", help="Path to model store")
 @click.option("--output-dir", default="reports", help="Output directory for reports")
 @click.option("--train-ratio", default=0.80, type=float, help="Temporal split ratio")
-def evaluate(data_path: str, model_dir: str, output_dir: str, train_ratio: float) -> None:
+@click.option(
+    "--shap", "run_shap", is_flag=True, help="Generate SHAP summary (requires explain extra)"
+)
+@click.option("--shap-samples", default=200, type=int, help="Max samples for SHAP computation")
+def evaluate(
+    data_path: str,
+    model_dir: str,
+    output_dir: str,
+    train_ratio: float,
+    run_shap: bool,
+    shap_samples: int,
+) -> None:
     """Evaluate the promoted model and generate report artifacts."""
+    import numpy as np
+
     from transaction_classifier.core.artifacts.store import ModelStore
     from transaction_classifier.core.data.loader import read_csv_data
     from transaction_classifier.core.data.splitter import split_by_date
     from transaction_classifier.core.features.engine import DomainFeatureEngine
-    from transaction_classifier.core.features.pipeline import assemble_feature_matrix
+    from transaction_classifier.core.features.pipeline import (
+        assemble_feature_matrix,
+        collect_feature_names,
+    )
     from transaction_classifier.evaluation.visualize import generate_all_reports
 
     logger.info("Loading model from %s", model_dir)
@@ -57,8 +73,30 @@ def evaluate(data_path: str, model_dir: str, output_dir: str, train_ratio: float
     proba = bundle.model.predict_proba(X_val)
     y_pred = proba.argmax(axis=1)
 
+    # Prepare SHAP inputs if requested
+    model_for_shap = None
+    X_dense_for_shap = None
+    feature_names_for_shap = None
+    if run_shap:
+        logger.info("Preparing SHAP data (%d samples) ...", shap_samples)
+        feature_names_for_shap = collect_feature_names(val_df, bundle.text_extractor, engine)
+        rng = np.random.default_rng(42)
+        n_val = X_val.shape[0]
+        idx = rng.choice(n_val, size=min(shap_samples, n_val), replace=False)
+        X_dense_for_shap = X_val.tocsr()[idx].toarray()
+        model_for_shap = bundle.model
+
     class_names = list(le.classes_)
-    metrics = generate_all_reports(y_true, y_pred, proba, class_names, Path(output_dir))
+    metrics = generate_all_reports(
+        y_true,
+        y_pred,
+        proba,
+        class_names,
+        Path(output_dir),
+        model=model_for_shap,
+        X_dense=X_dense_for_shap,
+        feature_names=feature_names_for_shap,
+    )
 
     logger.info("Accuracy: %.4f", metrics["accuracy"])
     logger.info("Balanced accuracy: %.4f", metrics["balanced_accuracy"])
