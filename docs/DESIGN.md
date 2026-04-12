@@ -6,12 +6,12 @@ Technical deep-dive into the transaction-classifier architecture. For setup and 
 
 ## 1. Data Flow: Raw Transaction to Prediction
 
-A bank transaction enters the system as a JSON payload on the `/classify/{client_id}` endpoint and exits as a ranked list of account code predictions with confidence scores.
+A bank transaction enters the system as a JSON payload on the `/classify` endpoint and exits as a ranked list of account code predictions with confidence scores.
 
 ```mermaid
 flowchart LR
     subgraph Ingress
-        A[HTTP POST /classify/client_id] --> B[require_api_key]
+        A[HTTP POST /classify] --> B[require_api_key]
         B --> C[Predictor.classify]
     end
 
@@ -40,7 +40,7 @@ flowchart LR
 
 ### Concrete path through the code
 
-1. **`inference/routes/classify.py`** -- FastAPI route receives `ClassifyRequest`, enforces batch size limit (`batch_limit=100`), resolves the `Predictor` for the given `client_id`.
+1. **`inference/routes/classify.py`** -- FastAPI route receives `ClassifyRequest`, enforces batch size limit (`batch_limit=100`), resolves the singleton `Predictor` from `app.state`.
 2. **`inference/predictor.py :: Predictor.classify`** -- Converts `list[TransactionPayload]` to a DataFrame via `build_frame`, calls `assemble_feature_matrix(df, text_extractor, domain_engine, fit=False)`.
 3. **`core/features/pipeline.py :: assemble_feature_matrix`** -- Orchestrator. Builds dense features from four families (numeric, date, domain via `DomainFeatureEngine`), builds sparse TF-IDF features via `TfidfFeatureExtractor.transform`, concatenates with `scipy.sparse.hstack`.
 4. **`core/models/xgboost_model.py :: XGBoostModel.predict_proba`** -- Converts the sparse matrix to `xgb.DMatrix`, calls `booster.predict` to get class probabilities.
@@ -59,7 +59,7 @@ The feature pipeline concatenates **sparse** (TF-IDF) and **dense** (domain/nume
 | Text (TF-IDF) | `core/features/text.py` | `scipy.sparse.spmatrix` | up to 10,000 |
 | Numeric | `core/features/standard.py` | `pd.DataFrame` (dense) | 8 |
 | Date | `core/features/standard.py` | `pd.DataFrame` (dense) | 13 |
-| Domain | `core/features/engine.py` | `pd.DataFrame` (dense) | ~60–80 (profile-driven) |
+| Domain | `core/features/engine.py` | `pd.DataFrame` (dense) | ~65--85 (profile-driven) |
 
 ### Text features: 3 TF-IDF vectorizers
 
@@ -116,6 +116,18 @@ This produces a single sparse matrix that XGBoost consumes directly via `xgb.DMa
 
 To adapt the system for a different domain or country, create a new YAML profile following the same schema.
 
+#### VAT-round amount detection
+
+The `vat_signals` section of the profile defines a list of standard VAT rates (e.g., 20%, 10%, 5.5%, 2.1% for France). For each rate, `DomainFeatureEngine` checks whether `amount / (1 + rate)` yields a value within `tolerance` of a round integer. This produces one binary column per rate (e.g., `vat_compatible_0200`). The signal is useful because invoices are typically issued at exact pre-tax amounts -- a transaction whose gross amount reverse-divides cleanly at 20% is more likely to be a VAT-inclusive purchase than a salary payment.
+
+#### IBAN country code detection
+
+The `derived_features` block inside `structured_fields` defines rules that derive new binary features from extracted SEPA field values. Currently, one rule is configured: `is_domestic_iban`, which checks whether the IBAN extracted from the `IBE` field starts with `"FR"`. This distinguishes domestic from cross-border transfers without leaking the full IBAN into the feature space.
+
+#### Profile source citations
+
+The `sources` block at the top of each profile maps each knowledge domain (e.g., `fiscal_calendar`, `tva_rates`, `iban_structure`) to its public reference URL. This block is informational only -- it is not consumed by the engine -- but it documents where each set of thresholds and patterns originates, which matters for auditability.
+
 ### Public-Knowledge Constants
 
 All domain-specific constants live in `config/profiles/french_treasury.yaml`, which is the single source of truth for the feature profile. The values come from public sources:
@@ -145,6 +157,8 @@ sequenceDiagram
     participant S as ModelStore
     participant V as QualityGate
     participant FS as Filesystem
+    participant W as watchdog.Observer
+    participant H as _ModelReloadHandler
     participant P as Predictor
 
     T->>S: store.save(model, featurizer, encoder, metrics)
@@ -159,19 +173,21 @@ sequenceDiagram
         Note over V,FS: model saved but NOT promoted<br/>previous version continues serving
     end
 
-    loop every 30s
-        S->>FS: has_new_version() — compare symlink target
-        alt symlink changed
-            S->>FS: load_active() — verify checksums, load bundle
-            S-->>P: new ModelBundle
-        end
+    Note over W,H: filesystem event on models/ directory
+    W->>H: on_any_event()
+    Note over H: debounce (model_watch_debounce_secs)
+    H->>S: has_update() -- compare symlink target
+    alt symlink changed
+        H->>S: load_active() -- verify checksums, load bundle
+        S-->>H: new ModelBundle
+        H->>P: app.state.predictor = Predictor(bundle, ...)
     end
 ```
 
 ### Versioned directory layout
 
 ```
-models/{client_id}/
+models/
   v-20260301-120000/
     classifier.json        # XGBoost model (JSON format)
     text_features.joblib   # {label, detail, char} TfidfVectorizers
@@ -203,63 +219,26 @@ The `rename` is atomic on POSIX filesystems -- there is no window where `current
 
 ### Hot-reload
 
-The background watcher in `inference/app.py :: lifespan` polls every `reload_poll_secs` (default 30s):
+The `lifespan` context manager in `inference/app.py` starts a `watchdog.Observer` that monitors the `models/` directory for filesystem events. When a change is detected (e.g., a symlink swap after promotion), the `_ModelReloadHandler` debounces the event (default `model_watch_debounce_secs=2.0`) and then checks whether the symlink target has actually changed:
 
 ```python
-# inference/app.py :: watch_for_updates
-async def watch_for_updates():
-    interval = settings.reload_poll_secs
-    while True:
-        await asyncio.sleep(interval)
-        for client_id, store in list(stores.items()):
-            if store.has_new_version():
-                bundle = store.load_active()
-                app.state.predictors[client_id] = Predictor(bundle, ...)
+# inference/app.py :: _ModelReloadHandler._try_reload
+def _try_reload(self) -> None:
+    if not self._store.has_update():
+        return
+    predictor = reload_predictor(self._store, settings.default_top_k, self._domain_engine)
+    self._app.state.predictor = predictor
 ```
 
-`ModelStore.has_new_version` reads the symlink target and compares it to the last-loaded version string. The assignment to `app.state.predictors[client_id]` is a single dict reference swap -- in-flight requests on the old predictor complete normally.
+`ModelStore.has_update` reads the symlink target and compares it to the last-loaded version string. The assignment to `app.state.predictor` is a single reference swap -- in-flight requests on the old predictor complete normally.
+
+**Why watchdog instead of polling:** The previous implementation polled every 30 seconds via `asyncio.sleep`. This meant up to 30 seconds of latency between promotion and reload, and the polling loop consumed an async task slot continuously. The `watchdog` observer reacts to actual filesystem events with sub-second latency, and the debounce window collapses rapid-fire events (e.g., multiple files written during `ModelStore.save`) into a single reload check.
 
 ---
 
-## 4. Multi-Client Isolation
+## 4. Single-Tenant Design
 
-Each client is a separate accounting entity with its own transaction history, account chart, and model.
-
-### Registry
-
-`core/data/registry.py :: ClientRegistry` loads `clients.yaml`:
-
-```yaml
-clients:
-  - id: acme_corp
-    database_url: postgresql://...
-    query: "SELECT ... FROM transactions LIMIT %(limit)s"
-  - id: globex
-    database_url: postgresql://...
-    query: "SELECT ... FROM globex_transactions LIMIT %(limit)s"
-```
-
-Each `ClientConfig` holds: `id`, `database_url`, and a `query` string. The provider executes the query directly, substituting `%(limit)s` with the configured row limit.
-
-### Isolation boundaries
-
-| Concern | Isolation mechanism |
-|---------|-------------------|
-| Data | Postgres schema per client (`schema` field in `ClientConfig`) |
-| Models | Separate directory tree: `models/{client_id}/current -> v-...` |
-| Training | Independent `TrainingPipeline` runs per client |
-| Serving | Separate `Predictor` and `ModelStore` instances in `app.state.predictors[client_id]` |
-| API routing | Path parameter: `POST /classify/{client_id}` |
-
-### What is shared
-
-- The codebase itself -- all clients use the same `TrainingPipeline`, `assemble_feature_matrix`, `XGBoostModel`.
-- The feature pipeline structure (same vectorizer configs, same domain feature profile). Per-client feature vocabulary is captured in the serialized `text_features.joblib`.
-- The `PostgresProvider` implementation — each client supplies its own SQL query string.
-
-### Lifecycle during serving
-
-At startup, `lifespan` iterates `registry.clients`, creates one `ModelStore` per client, and loads each client's `current` model bundle. Clients without a trained model log a warning and return 503 on prediction requests. The background watcher polls all clients independently.
+This system is designed for a single accounting entity's transaction history. There is one model store (`models/`), one `Predictor` instance, and one set of API routes with no tenant path parameters. The feature profile (`config/profiles/`) is the extension point -- to adapt for a different domain or country, create a new profile rather than a new tenant. This keeps the serving layer simple (no routing, no per-tenant state management) and avoids the operational overhead of multi-model hot-reload coordination.
 
 ---
 
@@ -289,7 +268,7 @@ The gate requires the model to beat the majority-class baseline by at least 20% 
 flowchart TD
     A[TrainingPipeline.run completes] --> B{QualityGate.validate}
     B -->|pass| C[QualityGate.promote → set_current]
-    C --> D[Serving picks up new model within 30s]
+    C --> D[Serving picks up new model via watchdog]
     B -->|fail| E[Model saved to v-YYYYMMDD-HHMMSS/]
     E --> F["current symlink unchanged\nprevious model continues serving"]
     F --> G[Operator investigates manifest.json metrics]
@@ -305,50 +284,56 @@ The failed model's artifacts remain on disk (status `"candidate"` in `Manifest`)
 
 | Tier | Header | Config key | Protects |
 |------|--------|-----------|----------|
-| Prediction | `X-API-Key` | `TXCLS_API_KEYS` (comma-separated) | `POST /classify/{client_id}` |
-| Admin | `X-API-Key` | `TXCLS_ADMIN_API_KEYS` (comma-separated) | `POST /ops/refresh`, `POST /ops/confidence-histogram/{client_id}` |
+| Prediction | `X-API-Key` | `TXCLS_API_KEYS` (comma-separated) | `POST /classify`, `POST /explain` |
+| Admin | `X-API-Key` | `TXCLS_ADMIN_API_KEYS` (comma-separated) | `POST /ops/refresh`, `POST /ops/confidence-histogram` |
 
 ### Implementation
 
-`inference/auth.py` defines two FastAPI dependencies: `require_api_key` and `require_admin_key`.
+`inference/auth.py` defines two FastAPI dependencies: `require_api_key` and `require_admin_key`. Both return a typed `AuthContext` dataclass that carries the caller's access tier:
 
-The `/health` endpoint returns `{"status": "healthy"}` when at least one model is loaded, and `{"status": "degraded"}` otherwise.
+```python
+# inference/auth.py
+@dataclass(frozen=True)
+class AuthContext:
+    tier: Literal["predict", "admin"]
+```
+
+This gives downstream handlers a typed object instead of `None`, which makes it straightforward to branch on tier if needed and eliminates the implicit "auth passed if no exception was raised" convention.
+
+The `/health` endpoint returns `{"status": "healthy"}` when a model is loaded, and `{"status": "degraded"}` otherwise.
 
 Key comparison uses `hmac.compare_digest` to prevent timing side-channel attacks:
 
 ```python
 # inference/auth.py :: _matches_any
-def _matches_any(provided: str, valid_keys: list[str]) -> bool:
-    encoded = provided.encode()
-    return any(
-        hmac.compare_digest(encoded, key.encode())
-        for key in valid_keys
-    )
+def _matches_any(candidate: str, allowed: list[str]) -> bool:
+    encoded = candidate.encode()
+    return any(hmac.compare_digest(encoded, k.encode()) for k in allowed)
 ```
 
 Note: the `any()` short-circuits on the first match, so an attacker can infer how many keys exist by timing. This is acceptable for a private API with a small key list. For a public-facing API, use a single hashed key with constant-time lookup.
 
 ### Dev mode bypass
 
-When the key list is empty (the default), auth is disabled entirely:
+When the key list is empty (the default), auth is disabled but still returns a typed context:
 
 ```python
 # inference/auth.py :: require_api_key
-if not settings.api_keys:
-    return  # no keys configured → skip auth
+if not keys:
+    return AuthContext(tier="predict")
 ```
 
 This lets developers run the API locally without configuring keys. In production, set `TXCLS_API_KEYS` and `TXCLS_ADMIN_API_KEYS`.
 
-### SQL schema injection
+### SQL query configuration
 
-`source.py` uses Python `.format()` to inject schema names into SQL. These values come from `clients.yaml`, which is operator-controlled configuration — not user input. Parameterized schema identifiers are not supported by `psycopg2`, so this is an accepted tradeoff for this use case.
+Data ingestion uses a configurable SQL query (`TXCLS_PG_QUERY`) that is operator-controlled configuration, not user input. The query string is passed directly to the database driver with only a `%(limit)s` parameter substitution for row limits.
 
 ---
 
 ## 7. Explainability
 
-The `/explain/{client_id}` endpoint uses SHAP `TreeExplainer` to decompose each prediction into per-feature contributions. For a given transaction, it answers: "which features pushed the model toward this accounting code, and by how much?"
+The `/explain` endpoint uses SHAP `TreeExplainer` to decompose each prediction into per-feature contributions. For a given transaction, it answers: "which features pushed the model toward this accounting code, and by how much?"
 
 SHAP is an optional dependency (`explain` extra). The endpoint lazy-imports it and returns HTTP 501 if unavailable, keeping the core serving image lightweight. `TreeExplainer` is created per-request rather than cached — explanation workloads are lower-volume than classification, and caching a `TreeExplainer` across model reloads would require invalidation logic that isn't warranted.
 
