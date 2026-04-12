@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from transaction_classifier.core.config import Settings
-from transaction_classifier.inference.auth import require_admin_key, require_api_key
+from transaction_classifier.inference.auth import AuthContext, require_admin_key, require_api_key
 
 
 def _make_app(dependency, api_keys=None, admin_api_keys=None):
@@ -74,3 +74,47 @@ class TestRequireAdminKey:
         app = _make_app(require_admin_key)
         resp = TestClient(app).get("/protected")
         assert resp.status_code == 200
+
+
+_predict_dep = Depends(require_api_key)
+_admin_dep = Depends(require_admin_key)
+
+
+class TestAuthContext:
+    """Tests that auth dependencies return typed AuthContext."""
+
+    def test_predict_tier_returns_context(self):
+        app = FastAPI()
+        app.state.settings = Settings(api_keys=["test-key"])
+
+        @app.get("/ctx")
+        async def get_ctx(auth: AuthContext = _predict_dep):  # noqa: B008
+            return {"tier": auth.tier}
+
+        resp = TestClient(app).get("/ctx", headers={"X-API-Key": "test-key"})
+        assert resp.status_code == 200
+        assert resp.json()["tier"] == "predict"
+
+    def test_admin_tier_returns_context(self):
+        app = FastAPI()
+        app.state.settings = Settings(admin_api_keys=["admin-key"])
+
+        @app.get("/ctx")
+        async def get_ctx(auth: AuthContext = _admin_dep):  # noqa: B008
+            return {"tier": auth.tier}
+
+        resp = TestClient(app).get("/ctx", headers={"X-API-Key": "admin-key"})
+        assert resp.status_code == 200
+        assert resp.json()["tier"] == "admin"
+
+    def test_dev_mode_returns_predict_context(self):
+        app = FastAPI()
+        app.state.settings = Settings()
+
+        @app.get("/ctx")
+        async def get_ctx(auth: AuthContext = _predict_dep):  # noqa: B008
+            return {"tier": auth.tier}
+
+        resp = TestClient(app).get("/ctx")
+        assert resp.status_code == 200
+        assert resp.json()["tier"] == "predict"
