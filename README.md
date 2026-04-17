@@ -54,7 +54,7 @@ XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperpar
 - **Temporal train/val split** — no random shuffle. _In production, you predict future transactions from past patterns; random splits leak future information and inflate metrics._
 - **Atomic symlink promotion** — new model artifacts land in a versioned directory; a symlink swap makes them live. _Prevents serving half-written model files during deployment._
 - **Quality gate before promotion** — floor thresholds (not targets) block catastrophically bad models. _Catches cold-start scenarios where sparse training data produces a model worse than the previous version._
-- **Hot-reload with in-flight completion** — polling + old predictor stays alive until current requests finish. _Zero-downtime model updates without a load balancer or blue-green deployment._
+- **Hot-reload with in-flight completion** — filesystem events (watchdog) with debounce + old predictor stays alive until current requests finish. _Zero-downtime model updates without a load balancer or blue-green deployment._
 
 ## Architecture
 

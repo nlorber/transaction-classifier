@@ -6,12 +6,9 @@ services:
     volumes:
       - ${MODEL_STORE_PATH:-./models}:/data/models
       - ${TXCLS_DATA_PATH:-../data}:/data/input:ro
-      # Multi-client: create clients.yaml at project root before running
-      - ${CLIENTS_CONFIG_FILE:-../clients.yaml}:/run/clients.yaml:ro
     environment:
       - TXCLS_ARTIFACT_DIR=/data/models
       - TXCLS_DATA_PATH=/data/input/sample.csv
-      - TXCLS_CLIENT_REGISTRY_PATH=/run/clients.yaml
       - TXCLS_PG_ROW_LIMIT=${TXCLS_PG_ROW_LIMIT:-500000}
       - TXCLS_LOG_FORMAT=json
     profiles:
@@ -23,11 +20,8 @@ services:
       dockerfile: docker/Dockerfile.serve
     volumes:
       - ${MODEL_STORE_PATH:-./models}:/data/models
-      # Multi-client: create clients.yaml at project root before running
-      - ${CLIENTS_CONFIG_FILE:-../clients.yaml}:/run/clients.yaml:ro
     environment:
       - TXCLS_ARTIFACT_DIR=/data/models
-      - TXCLS_CLIENT_REGISTRY_PATH=/run/clients.yaml
       - TXCLS_LOG_FORMAT=json
       - TXCLS_LOG_LEVEL=INFO
       - TXCLS_SANDBOX_MODE=${TXCLS_SANDBOX_MODE:-false}

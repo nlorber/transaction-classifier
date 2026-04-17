@@ -19,7 +19,6 @@ venv/
 
 # Environment
 .env
-clients.yaml
 
 # Secrets (defense-in-depth)
 *.key
