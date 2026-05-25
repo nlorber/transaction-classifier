@@ -18,9 +18,10 @@ class AuthContext:
 
 
 def _matches_any(candidate: str, allowed: list[str]) -> bool:
-    """Constant-time comparison of *candidate* against every key in *allowed*."""
+    """Compare *candidate* against every key without short-circuit to prevent timing leaks."""
     encoded = candidate.encode()
-    return any(hmac.compare_digest(encoded, k.encode()) for k in allowed)
+    results = [hmac.compare_digest(encoded, k.encode()) for k in allowed]
+    return any(results)
 
 
 async def require_api_key(

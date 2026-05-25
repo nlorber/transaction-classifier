@@ -1,9 +1,12 @@
 """Unit tests for API key authentication."""
 
+import hmac
+
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from transaction_classifier.core.config import Settings
+from transaction_classifier.inference import auth
 from transaction_classifier.inference.auth import AuthContext, require_admin_key, require_api_key
 
 
@@ -118,3 +121,30 @@ class TestAuthContext:
         resp = TestClient(app).get("/ctx")
         assert resp.status_code == 200
         assert resp.json()["tier"] == "predict"
+
+
+class TestMatchesAnyConstantTime:
+    """`_matches_any` must compare against every key to prevent timing leaks."""
+
+    def test_all_keys_compared_when_first_matches(self, monkeypatch):
+        original = hmac.compare_digest
+        call_count = 0
+
+        def counting_compare(a: bytes, b: bytes) -> bool:
+            nonlocal call_count
+            call_count += 1
+            return original(a, b)
+
+        monkeypatch.setattr(auth.hmac, "compare_digest", counting_compare)
+
+        keys = ["alpha", "beta", "gamma"]
+        result = auth._matches_any("alpha", keys)
+
+        assert result is True
+        assert call_count == len(keys)
+
+    def test_match_at_end_returns_true(self):
+        assert auth._matches_any("gamma", ["alpha", "beta", "gamma"]) is True
+
+    def test_no_match_returns_false(self):
+        assert auth._matches_any("nope", ["alpha", "beta"]) is False
