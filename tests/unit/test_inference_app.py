@@ -53,6 +53,52 @@ class TestLifespanSandboxMode:
             assert app.state.store is None
 
 
+class TestLifespanApiKeyWarning:
+    def _capture_app_warnings(self, app: object) -> list[str]:
+        """Run the app inside TestClient and return warning messages from the app logger."""
+        import logging as _logging
+
+        records: list[str] = []
+
+        class _CapHandler(_logging.Handler):
+            def emit(self, record: _logging.LogRecord) -> None:
+                records.append(record.getMessage())
+
+        handler = _CapHandler()
+        handler.setLevel(_logging.WARNING)
+        log = _logging.getLogger("transaction_classifier.inference.app")
+        log.addHandler(handler)
+        try:
+            with TestClient(app):
+                pass
+        finally:
+            log.removeHandler(handler)
+        return records
+
+    def test_warns_when_no_api_keys_in_non_sandbox_mode(self):
+        """App warns at startup when running without authentication."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = Settings(sandbox_mode=False, api_keys=[], artifact_dir=tmpdir)
+            app = create_app(settings)
+            messages = self._capture_app_warnings(app)
+        assert any("TXCLS_API_KEYS" in m for m in messages)
+
+    def test_no_warning_when_api_keys_present(self):
+        """App does not warn when api_keys are configured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = Settings(sandbox_mode=False, api_keys=["secret-key"], artifact_dir=tmpdir)
+            app = create_app(settings)
+            messages = self._capture_app_warnings(app)
+        assert not any("TXCLS_API_KEYS" in m for m in messages)
+
+    def test_no_warning_in_sandbox_mode(self):
+        """No api_keys warning is emitted in sandbox mode."""
+        settings = Settings(sandbox_mode=True, api_keys=[])
+        app = create_app(settings)
+        messages = self._capture_app_warnings(app)
+        assert not any("TXCLS_API_KEYS" in m for m in messages)
+
+
 class TestLifespanWithModel:
     def test_loads_model_on_startup(self, sample_df, domain_engine):
         """Full lifespan test: create a model in a tmpdir and start the app."""

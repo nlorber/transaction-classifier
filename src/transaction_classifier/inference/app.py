@@ -80,6 +80,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
         return
 
+    if not settings.api_keys:
+        logger.warning(
+            "No TXCLS_API_KEYS configured — all requests will be accepted without authentication"
+        )
+
     domain_engine = DomainFeatureEngine(settings.feature_profile)
     store = ModelStore(Path(settings.artifact_dir))
     app.state.store = store
