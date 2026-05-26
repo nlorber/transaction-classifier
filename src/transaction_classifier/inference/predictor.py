@@ -93,23 +93,34 @@ class Predictor:
             frame, self.bundle.text_extractor, self.domain_engine
         )
 
-        X_dense = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
-
         if self.bundle.model.model is None:
             raise ValueError("Model has not been fitted")
         explainer = shap.TreeExplainer(self.bundle.model.model.get_booster())
-        shap_values = explainer.shap_values(X_dense)
-
-        # shap_values shape: (n_samples, n_features, n_classes) or list of arrays
-        shap_arr = np.stack(shap_values, axis=-1) if isinstance(shap_values, list) else shap_values
-        if shap_arr.ndim == 2:
-            shap_arr = shap_arr[:, :, np.newaxis]
 
         proba = self.bundle.model.predict_proba(X)
         classes = self.bundle.label_encoder.classes_
 
+        # Ensure the matrix supports row-slicing (COO does not; CSR does).
+        X_csr = X.tocsr() if hasattr(X, "tocsr") else X
+
         results: list[ExplainItemResult] = []
         for row_idx in range(len(frame)):
+            # Materialise one row at a time to avoid a full-batch dense allocation.
+            row = X_csr[row_idx]
+            row_dense = row.toarray() if hasattr(row, "toarray") else np.asarray(row)
+            row_dense = row_dense.reshape(1, -1)
+
+            row_shap_values = explainer.shap_values(row_dense)
+            # row_shap_values: list of (1, n_features) or (1, n_features, n_classes)
+            row_shap_arr = (
+                np.stack(row_shap_values, axis=-1)
+                if isinstance(row_shap_values, list)
+                else row_shap_values
+            )
+            if row_shap_arr.ndim == 2:
+                row_shap_arr = row_shap_arr[:, :, np.newaxis]
+            # Shape is now (1, n_features, n_classes)
+
             if target_class is not None:
                 class_idx = int(np.where(classes == target_class)[0][0])
             else:
@@ -117,8 +128,8 @@ class Predictor:
 
             code = str(classes[class_idx])
             confidence = round(float(proba[row_idx, class_idx]), 4)
-            row_shap = shap_arr[row_idx, :, class_idx]
-            row_vals = X_dense[row_idx]
+            row_shap = row_shap_arr[0, :, class_idx]
+            row_vals = row_dense[0]
 
             top_idx = np.argsort(np.abs(row_shap))[-max_features:][::-1]
             contributions = [
