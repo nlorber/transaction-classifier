@@ -22,8 +22,16 @@ from .routes import classify, explain, health, ops
 logger = logging.getLogger(__name__)
 
 
+_MAX_RELOAD_DELAY_SECS: float = 30.0
+
+
 class _ModelReloadHandler(FileSystemEventHandler):
-    """Debounced filesystem handler that reloads the model when the symlink moves."""
+    """Debounced filesystem handler that reloads the model when the symlink moves.
+
+    Rolling debounce: each new event resets the timer to *debounce_secs*.
+    Hard cap: if the first event in a burst is older than *max_delay_secs* the
+    reload is forced immediately, preventing starvation under continuous churn.
+    """
 
     def __init__(
         self,
@@ -31,22 +39,45 @@ class _ModelReloadHandler(FileSystemEventHandler):
         store: ModelStore,
         domain_engine: DomainFeatureEngine,
         debounce_secs: float,
+        max_delay_secs: float = _MAX_RELOAD_DELAY_SECS,
     ) -> None:
         self._app = app
         self._store = store
         self._domain_engine = domain_engine
         self._debounce_secs = debounce_secs
+        self._max_delay_secs = max_delay_secs
         self._timer: threading.Timer | None = None
+        self._first_event_time: float | None = None
         self._lock = threading.Lock()
 
     def on_any_event(self, event: FileSystemEvent) -> None:  # noqa: ARG002
         with self._lock:
+            now = time.monotonic()
+            if self._first_event_time is None:
+                self._first_event_time = now
+
+            elapsed = now - self._first_event_time
+            if elapsed >= self._max_delay_secs:
+                # Force-fire: max delay exceeded — cancel any pending timer and reload now.
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
+                self._first_event_time = None
+                threading.Thread(target=self._try_reload, daemon=True).start()
+                return
+
+            # Rolling debounce: reschedule.
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(self._debounce_secs, self._try_reload)
+            remaining = self._max_delay_secs - elapsed
+            delay = min(self._debounce_secs, remaining)
+            self._timer = threading.Timer(delay, self._try_reload)
             self._timer.start()
 
     def _try_reload(self) -> None:
+        with self._lock:
+            self._first_event_time = None
+            self._timer = None
         try:
             if not self._store.has_update():
                 return
