@@ -58,6 +58,17 @@ def explain(
     if predictor is None:
         raise HTTPException(status_code=503, detail="No model loaded")
 
+    if target_class is not None:
+        valid_classes: list[str] = predictor.bundle.label_encoder.classes_.tolist()
+        if target_class not in valid_classes:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Unknown target_class: '{target_class}' is not in the model's label set",
+                    "valid_classes": valid_classes,
+                },
+            )
+
     try:
         items = predictor.explain(
             body.transactions,
@@ -68,11 +79,6 @@ def explain(
         raise HTTPException(
             status_code=501,
             detail="shap not installed — install with: uv sync --extra explain",
-        ) from exc
-    except (IndexError, KeyError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown target_class: '{target_class}' is not in the model's label set",
         ) from exc
 
     return ExplainResponse(

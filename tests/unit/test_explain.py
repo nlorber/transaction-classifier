@@ -110,12 +110,14 @@ class TestExplainEndpoint:
         assert data["results"][0]["predicted_code"] == "100000"
         explain_app.app.state.settings.sandbox_mode = False
 
-    def test_invalid_target_class_returns_422(self, explain_app):
-        pytest.importorskip("shap")
+    def test_invalid_target_class_returns_400(self, explain_app):
         resp = explain_app.post(
             "/explain",
             params={"target_class": "999999"},
             json={"transactions": [{"description": "TEST"}]},
         )
-        assert resp.status_code == 422
-        assert "999999" in resp.json()["detail"]
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "999999" in detail["error"]
+        assert isinstance(detail["valid_classes"], list)
+        assert len(detail["valid_classes"]) > 0
