@@ -80,7 +80,10 @@ def train(
 
     if auto_promote:
         gate = QualityGate(min_lift=settings.min_lift)
-        result = gate.check(manifest, baseline_accuracy=baseline_accuracy, n_classes=n_classes)
+        store = ModelStore(settings.artifact_dir)
+        result = gate.check(
+            manifest, baseline_accuracy=baseline_accuracy, n_classes=n_classes, store=store
+        )
         if result.passed:
             store = ModelStore(settings.artifact_dir)
             gate.approve_and_promote(store, manifest)
