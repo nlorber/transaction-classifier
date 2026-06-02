@@ -158,13 +158,17 @@ class TestMaxDelayForceFire:
             from watchdog.events import FileCreatedEvent
 
             ev = FileCreatedEvent("x")
-            # First event starts the burst clock.
+            # Directly seed the burst clock as if it started 0.1 s ago.
+            # The remaining-cap timer (min(debounce, remaining)) always fires at
+            # T0 + max_delay_secs, so a sleep-based approach cannot reliably reach
+            # elapsed >= max_delay without racing that timer.  Seeding state is the
+            # only deterministic way to exercise the force-fire branch.
+            with handler._lock:
+                handler._first_event_time = time.monotonic() - 0.1  # 0.1 s >> max_delay 0.05
+
+            # elapsed (~0.1 s) >= max_delay_secs (0.05) → force-fire path.
             handler.on_any_event(ev)
-            # Wait for max_delay to expire.
-            time.sleep(0.15)
-            # Second event should detect elapsed >= max_delay and fire immediately.
-            handler.on_any_event(ev)
-            # After the force-fire path the first_event_time is reset to None.
-            time.sleep(0.05)  # let the daemon thread complete
+            # _first_event_time is set to None synchronously inside the lock,
+            # before the reload thread is spawned — no sleep needed.
             assert handler._first_event_time is None
             handler.shutdown()
