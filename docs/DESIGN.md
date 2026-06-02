@@ -389,7 +389,7 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 
 ### Feature ablation
 
-Accuracy on the temporal validation split (15% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same XGBoost hyperparameters (500 estimators, depth 6, lr 0.05).
+Accuracy on the temporal validation split (20% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same XGBoost hyperparameters (500 estimators, depth 6, lr 0.05).
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|

@@ -22,6 +22,8 @@ Trained on **synthetic data** (7,508 transactions, 80 account classes). On real 
 | Classes | 80 |
 | Evaluation samples | 1,502 |
 
+See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and the accuracy-vs-balanced-accuracy gap matter more.
+
 ### Feature Ablation
 
 Cumulative accuracy on the temporal validation split. Each row adds one feature family. Same XGBoost hyperparameters throughout.
