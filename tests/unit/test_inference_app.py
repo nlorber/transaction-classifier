@@ -44,6 +44,17 @@ class TestGetApp:
         assert app.title == "Transaction Classifier API"
 
 
+class TestDemoEndpoint:
+    def test_root_serves_demo_html(self):
+        """GET / serves the self-contained demo UI without auth, even in sandbox mode."""
+        app = create_app(Settings(sandbox_mode=True))
+        with TestClient(app) as client:
+            resp = client.get("/")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "transaction" in resp.text.lower()
+
+
 class TestLifespanSandboxMode:
     def test_sandbox_mode_skips_model_loading(self):
         settings = Settings(sandbox_mode=True)

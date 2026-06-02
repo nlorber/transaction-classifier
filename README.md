@@ -161,6 +161,8 @@ TXCLS_SANDBOX_MODE=true uv run tc-serve
 # created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current):
 # uv run tc-serve
 
+# Then open http://localhost:8000 for the interactive demo UI, or call the API:
+
 # Predict
 curl -X POST http://localhost:8000/classify \
   -H "Content-Type: application/json" \

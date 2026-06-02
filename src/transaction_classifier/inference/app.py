@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -21,6 +22,7 @@ from .routes import classify, explain, health, ops
 
 logger = logging.getLogger(__name__)
 
+_STATIC_DIR = Path(__file__).parent / "static"
 
 _MAX_RELOAD_DELAY_SECS: float = 30.0
 
@@ -166,6 +168,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(ops.router)
     app.include_router(explain.router)
+
+    @app.get("/", include_in_schema=False)
+    def demo() -> HTMLResponse:
+        """Serve the self-contained interactive demo UI (unauthenticated landing page)."""
+        return HTMLResponse((_STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     return app
 

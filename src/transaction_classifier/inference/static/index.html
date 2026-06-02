@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>transaction·classifier — account-code prediction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#070d0b; --bg2:#0a1410; --panel:#0d1a15; --line:#19302a; --line2:#26443a;
+    --txt:#e2f2ec; --dim:#88ad9f; --faint2:#4d6f63;
+    --accent:#34d39a; --accent-dim:#1d6f54;
+    --pos:#34d39a; --neg:#fb6f6f;
+    --r:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:'IBM Plex Sans',ui-sans-serif,system-ui,sans-serif; -webkit-font-smoothing:antialiased; line-height:1.5;
+    background-image:
+      radial-gradient(900px 520px at 80% -8%, #11402e33 0, transparent 60%),
+      radial-gradient(760px 460px at 6% 4%, #16322733 0, transparent 55%),
+      linear-gradient(var(--bg2),var(--bg));
+    background-attachment:fixed;
+  }
+  body::before{content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.4;
+    background-image:linear-gradient(#ffffff06 1px,transparent 1px),linear-gradient(90deg,#ffffff06 1px,transparent 1px);
+    background-size:46px 46px; mask-image:radial-gradient(120% 90% at 50% 0,#000 35%,transparent 90%)}
+  body::after{content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.5;
+    background:repeating-linear-gradient(0deg,#0000 0 3px,#00000022 3px 4px); mix-blend-mode:overlay}
+  .wrap{position:relative; z-index:1; max-width:1000px; margin:0 auto; padding:40px 26px 70px}
+
+  header{display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:26px; opacity:0; transform:translateY(-8px); animation:rise .6s .05s ease forwards}
+  .brand{font-family:'Chakra Petch',sans-serif; font-weight:700; font-size:24px; letter-spacing:.03em}
+  .brand .dot{color:var(--accent)}
+  .brand .sub{display:block; font-family:'IBM Plex Mono',monospace; font-weight:400; font-size:11px; letter-spacing:.26em; color:var(--faint2); margin-top:5px; text-transform:uppercase}
+  .hright{display:flex; flex-direction:column; align-items:flex-end; gap:9px}
+  .gh{display:inline-flex; align-items:center; gap:8px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--dim); text-decoration:none; border:1px solid var(--line); background:#0c1813cc; padding:7px 13px; border-radius:30px; transition:.16s}
+  .gh:hover{color:var(--txt); border-color:var(--accent-dim); box-shadow:0 0 0 3px #34d39a16}
+  .gh svg{opacity:.82}
+  .status{display:flex; align-items:center; gap:9px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--dim); border:1px solid var(--line); background:#0c1813cc; padding:8px 13px; border-radius:30px}
+  .led{width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 0 #34d39a66; animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 #34d39a55}70%{box-shadow:0 0 0 7px #34d39a00}100%{box-shadow:0 0 0 0 #34d39a00}}
+
+  .console{position:relative; border:1px solid var(--line); border-radius:var(--r); background:linear-gradient(#0e1c16,#0b1611); box-shadow:0 24px 60px -34px #000, inset 0 1px 0 #ffffff08; padding:18px; opacity:0; transform:translateY(10px); animation:rise .6s .12s ease forwards}
+  .lab{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.2em; color:var(--faint2); text-transform:uppercase; display:block; margin-bottom:6px}
+  .fld{margin-bottom:12px}
+  .frow{display:flex; gap:12px}
+  .frow .fld{flex:1}
+  input,textarea{width:100%; border:1px solid var(--line2); border-radius:9px; background:#070f0c; color:var(--txt); font-family:'IBM Plex Mono',monospace; font-size:13.5px; padding:11px 13px; outline:none; transition:border-color .18s, box-shadow .18s}
+  input:focus,textarea:focus{border-color:var(--accent-dim); box-shadow:0 0 0 3px #34d39a1c}
+  input::placeholder{color:#3f5b50}
+  .row{display:flex; align-items:center; justify-content:space-between; gap:14px; margin-top:6px; flex-wrap:wrap}
+  .chips{display:flex; gap:8px; flex-wrap:wrap}
+  .chip{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--dim); cursor:pointer; border:1px solid var(--line2); background:#0b1611; padding:6px 11px; border-radius:7px; transition:.16s}
+  .chip:hover{color:var(--txt); border-color:var(--accent-dim); background:#0f1f18}
+  .go{font-family:'Chakra Petch',sans-serif; font-weight:600; letter-spacing:.08em; font-size:13.5px; cursor:pointer; color:#04130d; background:linear-gradient(#4fe0ad,#2bbd8c); border:none; padding:11px 22px; border-radius:8px; text-transform:uppercase; transition:.16s; box-shadow:0 8px 22px -10px #34d39aaa}
+  .go:hover{filter:brightness(1.07)} .go:active{transform:translateY(1px)} .go:disabled{opacity:.55; cursor:default; box-shadow:none}
+
+  .out{margin-top:22px; display:none} .out.show{display:block}
+  .pipe{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:18px}
+  .node{display:flex; align-items:center; gap:9px; border:1px solid var(--line); background:#0c1813; border-radius:9px; padding:9px 13px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--faint2); transition:.3s}
+  .node .mk{width:8px;height:8px;border-radius:2px;background:#21392f;transition:.3s}
+  .node.lit{color:var(--txt); border-color:var(--line2)} .node.lit .mk{background:var(--accent); box-shadow:0 0 9px var(--accent)}
+  .arrow{color:#2b4339; font-family:'IBM Plex Mono',monospace}
+  .lat{margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--dim); border:1px solid var(--line); border-radius:30px; padding:6px 12px}
+  .lat b{color:var(--accent); font-weight:600}
+  .mv{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--faint2); margin-left:8px}
+
+  .grid{display:grid; grid-template-columns:.92fr 1.08fr; gap:16px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .panel{position:relative; border:1px solid var(--line); border-radius:var(--r); background:linear-gradient(#0d1b15,#0b1712); padding:17px 18px}
+  .panel::before,.panel::after{content:""; position:absolute; width:13px; height:13px; border:1.5px solid var(--accent-dim); opacity:.5}
+  .panel::before{top:8px; left:8px; border-right:0; border-bottom:0}
+  .panel::after{bottom:8px; right:8px; border-left:0; border-top:0}
+  .ptitle{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.18em; color:var(--faint2); text-transform:uppercase; margin-bottom:15px}
+
+  .code{margin-bottom:14px}
+  .code .r{display:flex; align-items:baseline; gap:10px; margin-bottom:6px}
+  .code .num{font-family:'Chakra Petch',sans-serif; font-weight:700; font-size:19px; color:var(--txt); letter-spacing:.02em}
+  .code .top{font-family:'IBM Plex Mono',monospace; font-size:9.5px; color:#06140e; background:var(--accent); padding:2px 7px; border-radius:5px; font-weight:600}
+  .code .cf{margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--dim)} .code .cf b{color:var(--accent)}
+  .bar{height:7px; border-radius:5px; background:#0a1611; overflow:hidden; border:1px solid #122a20}
+  .bar i{display:block; height:100%; width:0; border-radius:5px; background:linear-gradient(90deg,#1d6f54,#46e0ac); transition:width .9s cubic-bezier(.2,.8,.2,1)}
+  .pcg{font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--faint2); margin-top:4px}
+
+  .shead{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--dim); margin-bottom:14px}
+  .shead b{color:var(--accent)}
+  .shap{margin-bottom:11px}
+  .shap .r{display:flex; justify-content:space-between; font-family:'IBM Plex Mono',monospace; font-size:11.5px; margin-bottom:5px}
+  .shap .r .f{color:#bcd6cb} .shap .r .v{color:var(--dim)}
+  .track{position:relative; height:14px; background:#0a1611; border:1px solid #122a20; border-radius:4px; overflow:hidden}
+  .track .mid{position:absolute; left:50%; top:0; bottom:0; width:1px; background:#2b4339}
+  .track i{position:absolute; top:1px; bottom:1px; width:0; border-radius:2px; transition:width .8s cubic-bezier(.2,.8,.2,1), left .8s cubic-bezier(.2,.8,.2,1)}
+  .leg{display:flex; gap:16px; font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--faint2); margin-top:14px}
+  .leg span{display:inline-flex; align-items:center; gap:6px}
+  .leg b{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+  .err{border:1px solid #5a2630; background:#1c0e12; color:#f4a8a8; border-radius:var(--r); padding:15px 17px; font-family:'IBM Plex Mono',monospace; font-size:12.5px; line-height:1.55}
+  .err b{color:#fb6f6f}
+  @keyframes rise{to{opacity:1; transform:none}}
+  .reveal{opacity:0; transform:translateY(8px); animation:rise .5s ease forwards}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="brand">transaction<span class="dot">·</span>classifier<span class="sub">account-code prediction · Nathan Lorber</span></div>
+    </div>
+    <div class="hright">
+      <a class="gh" href="https://github.com/nlorber/transaction-classifier" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+        nlorber/transaction-classifier
+      </a>
+      <div class="status"><span class="led"></span><span>XGBoost · top-K + SHAP</span></div>
+    </div>
+  </header>
+
+  <section class="console">
+    <div class="fld"><span class="lab">Description</span><input id="description" spellcheck="false" placeholder="e.g. URSSAF COTISATIONS"></div>
+    <div class="frow">
+      <div class="fld" style="flex:1.4"><span class="lab">Remarks</span><input id="remarks" spellcheck="false" placeholder="e.g. PRLV SEPA CPY:FR123"></div>
+      <div class="fld"><span class="lab">Debit (€)</span><input id="debit" type="text" inputmode="decimal" placeholder="1234.56"></div>
+      <div class="fld"><span class="lab">Posting date</span><input id="posting_date" placeholder="2025-01-15"></div>
+    </div>
+    <div class="row">
+      <div class="chips" id="chips"></div>
+      <button class="go" id="go">Classify ▸</button>
+    </div>
+  </section>
+
+  <section class="out" id="out">
+    <div class="pipe">
+      <div class="node" id="n-feat"><span class="mk"></span>FEATURE PIPELINE</div>
+      <span class="arrow">→</span>
+      <div class="node" id="n-xgb"><span class="mk"></span>XGBOOST</div>
+      <span class="arrow">→</span>
+      <div class="node" id="n-out"><span class="mk"></span>TOP-K + SHAP</div>
+      <div class="lat" id="lat"></div>
+    </div>
+    <div id="body"></div>
+  </section>
+</div>
+
+<script>
+const PRESETS = {
+  salary:  {description:"VIR SEPA SALAIRE AOUT", remarks:"LIB:REMUNERATION AOUT", debit:"1800.00", posting_date:"2025-08-26", label:"a salary"},
+  laposte: {description:"PRLV SEPA LA POSTE", remarks:"", debit:"156.39", posting_date:"2024-04-11", label:"La Poste"},
+  loan:    {description:"PRLV SEPA ECHEANCE EMPRUNT", remarks:"LIB:ECHEANCE EMPRUNT", debit:"2601.85", posting_date:"2024-11-30", label:"a loan repayment"},
+};
+const $ = s => document.querySelector(s);
+const out=$("#out"), bodyEl=$("#body");
+
+$("#chips").innerHTML = Object.entries(PRESETS).map(([k,p])=>`<span class="chip" data-k="${k}">try a <b>${p.label}</b></span>`).join("");
+document.querySelectorAll(".chip").forEach(c=>c.addEventListener("click",()=>{
+  const p=PRESETS[c.dataset.k];
+  description.value=p.description; remarks.value=p.remarks; debit.value=p.debit; posting_date.value=p.posting_date;
+}));
+$("#go").addEventListener("click", run);
+
+function lit(){ ["n-feat","n-xgb","n-out"].forEach((id,i)=>setTimeout(()=>$("#"+id).classList.add("lit"),80+i*200)); }
+function reset(){ ["n-feat","n-xgb","n-out"].forEach(id=>$("#"+id).classList.remove("lit")); }
+
+async function run(){
+  const tx = {description:description.value.trim(), remarks:remarks.value.trim(),
+              debit:parseFloat(debit.value||"0")||0, posting_date:posting_date.value.trim()};
+  if(!tx.description){ description.focus(); return; }
+  const go=$("#go"); go.disabled=true; go.textContent="Classifying…";
+  out.classList.add("show"); reset(); bodyEl.innerHTML=""; lit();
+  const t0=performance.now();
+  try{
+    const [cRes, eRes] = await Promise.all([
+      fetch("/classify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:[tx],top_k:3})}),
+      fetch("/explain?max_features=6",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:[tx]})}),
+    ]);
+    const dt=Math.round(performance.now()-t0);
+    if(!cRes.ok){ const d=await cRes.json().catch(()=>({})); throw new Error(d.detail||(cRes.status+" "+cRes.statusText)); }
+    const classify=await cRes.json();
+    const explain = eRes.ok ? await eRes.json() : null;
+    render(classify, explain, dt);
+  }catch(err){
+    bodyEl.innerHTML=`<div class="err reveal"><b>classification failed.</b> ${String(err.message||err)}<br>
+      <span style="color:#88ad9f">Is the API up with a model promoted? <code>uv run tc-train --auto-promote</code></span></div>`;
+  }finally{ go.disabled=false; go.textContent="Classify ▸"; }
+}
+
+function render(classify, explain, dt){
+  const preds=(classify.results[0]||{}).predictions||[];
+  const ex=explain && explain.results && explain.results[0];
+  $("#lat").innerHTML=`latency <b>${dt} ms</b><span class="mv">model ${classify.model_version}</span>`;
+  const maxAbs = ex ? Math.max(...ex.contributions.map(c=>Math.abs(c.shap_value)),0.0001) : 1;
+
+  bodyEl.innerHTML=`<div class="grid">
+    <div class="panel reveal">
+      <div class="ptitle">Predicted account codes</div>
+      ${preds.map((p,i)=>`<div class="code">
+        <div class="r"><span class="num">${p.code}</span>${i===0?'<span class="top">TOP</span>':''}<span class="cf">conf <b>${(p.confidence*100).toFixed(1)}%</b></span></div>
+        <div class="bar"><i data-w="${(p.confidence*100).toFixed(1)}"></i></div>
+      </div>`).join("")}
+      <div class="pcg">French PCG account codes · ranked top-${preds.length}</div>
+    </div>
+    <div class="panel reveal" style="animation-delay:.08s">
+      <div class="ptitle">SHAP feature contributions</div>
+      ${ex ? `<div class="shead">why <b>${ex.predicted_code}</b> · ${(ex.confidence*100).toFixed(1)}% confidence</div>
+        ${ex.contributions.map(c=>{
+          const pos=c.shap_value>=0; const w=Math.abs(c.shap_value)/maxAbs*48;
+          const left=pos?50:(50-w);
+          return `<div class="shap"><div class="r"><span class="f">${esc(c.feature)}</span><span class="v">${pos?'+':''}${c.shap_value.toFixed(3)}</span></div>
+            <div class="track"><div class="mid"></div><i data-left="${left}" data-w="${w}" style="background:${pos?'var(--pos)':'var(--neg)'}"></i></div></div>`;
+        }).join("")}
+        <div class="leg"><span><b style="background:var(--pos)"></b> pushes toward prediction</span><span><b style="background:var(--neg)"></b> pushes against</span></div>`
+      : `<div class="shead">SHAP unavailable (install the <code>explain</code> extra).</div>`}
+    </div>
+  </div>`;
+
+  requestAnimationFrame(()=>setTimeout(()=>{
+    document.querySelectorAll(".code .bar i").forEach(i=>i.style.width=i.dataset.w+"%");
+    document.querySelectorAll(".track i").forEach(i=>{ i.style.left=i.dataset.left+"%"; i.style.width=i.dataset.w+"%"; });
+  },140));
+}
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+</script>
+</body>
+</html>
