@@ -50,13 +50,13 @@ n = **1,502** evaluation samples).
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 0.587 |
+| Top-1 accuracy | 0.584 |
 | Top-3 accuracy | 0.830 |
 | Top-5 accuracy | 0.909 |
 | Top-10 accuracy | 0.987 |
-| Balanced accuracy | 0.493 |
+| Balanced accuracy | 0.488 |
 
-**Read the gap between accuracy (0.587) and balanced accuracy (0.493) carefully:** the macro
+**Read the gap between accuracy (0.584) and balanced accuracy (0.488) carefully:** the macro
 view is weaker than the headline because minority classes underperform. Top-1 is a poor
 summary of this system; the top-K ranking metrics are the ones aligned with its intended use.
 
@@ -81,7 +81,7 @@ beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 
 ## Limitations & Ethical Considerations
 
 - **Long-tail weakness:** rare account codes are predicted least reliably (balanced accuracy
-  0.493). Do not rely on the model for unusual or low-frequency codes without review.
+  0.488). Do not rely on the model for unusual or low-frequency codes without review.
 - **Domain & locale bound:** trained for the French PCG and French-language transaction
   conventions; it does not transfer to other accounting standards or languages.
 - **Confidence is not calibration:** reported confidences are softmax-style scores, not
