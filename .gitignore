@@ -36,6 +36,7 @@ results/
 # Test artifacts
 .pytest_cache/
 .coverage
+coverage.json
 htmlcov/
 
 # OS
