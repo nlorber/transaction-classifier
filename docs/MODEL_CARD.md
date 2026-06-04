@@ -10,8 +10,9 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
   (Plan Comptable Général) codes.
 - **Architecture:** XGBoost gradient-boosted trees (500 estimators, depth 6, lr 0.05,
   `min_child_weight` 10, `gamma` 0.5), one-vs-rest over **80 account classes**.
-- **Inputs / features:** three TF-IDF vectorizers (character n-grams over the transaction
-  label, capturing morphological variants like `COTISATION`/`COTISATIONS`) plus
+- **Inputs / features:** three TF-IDF vectorizers (word n-grams on the `description` and
+  `remarks` fields; character n-grams on combined text, capturing morphological variants
+  like `COTISATION`/`COTISATIONS`) plus
   config-driven domain indicators (URSSAF/TVA deadlines, entity detection, SEPA fields),
   numeric amount features (magnitude buckets, round-amount and salary-range flags), and date
   features. Domain indicators are loaded from a YAML profile (`config/profiles/french_treasury.yaml`).

@@ -73,7 +73,7 @@ The feature pipeline concatenates **sparse** (TF-IDF) and **dense** (domain/nume
 
 All three use `sublinear_tf=True` (log-dampened term frequency), `min_df=3`, `max_df=0.95`. The char n-gram vectorizer operates on character boundaries (`char_wb`) to capture morphological patterns in French accounting text (e.g., "prlv", "vir sepa", "chq").
 
-**Vocabulary sizing rationale:** A grid search over `(label, detail, char)` combinations (`scripts/tfidf_search.py`) on the 7.5K-row synthetic dataset found that effective vocabulary saturates below 1,000 features per vectorizer when `min_df=3`. Character n-grams showed the clearest signal: `char=1000` consistently outperformed both smaller (500) and larger (2000+) sizes. Word-level vectorizers (`label`, `detail`) showed no significant difference above 1,000 features. We set `max_features` to 4,000 for word vectorizers to accommodate larger, more diverse real-world datasets while keeping the feature space manageable. Full results: `results/tfidf_search_*.txt`.
+**Vocabulary sizing rationale:** An offline grid search over `(label, detail, char)` combinations on the 7.5K-row synthetic dataset found that effective vocabulary saturates below 1,000 features per vectorizer when `min_df=3`. Character n-grams showed the clearest signal: `char=1000` consistently outperformed both smaller (500) and larger (2000+) sizes. Word-level vectorizers (`label`, `detail`) showed no significant difference above 1,000 features. We set `max_features` to 4,000 for word vectorizers to accommodate larger, more diverse real-world datasets while keeping the feature space manageable. Full results: `results/tfidf_search_*.txt`.
 
 The three sparse matrices are horizontally stacked:
 
@@ -311,7 +311,7 @@ def _matches_any(candidate: str, allowed: list[str]) -> bool:
     return any(hmac.compare_digest(encoded, k.encode()) for k in allowed)
 ```
 
-Note: the `any()` short-circuits on the first match, so an attacker can infer how many keys exist by timing. This is acceptable for a private API with a small key list. For a public-facing API, use a single hashed key with constant-time lookup.
+Note: the generator is fully consumed by `any()` only after every `hmac.compare_digest` call has run — there is no short-circuit on the first match, so comparison time does not leak the key's position. (`test_all_keys_compared_when_first_matches` asserts every key is compared even when the first one matches.)
 
 ### Dev mode bypass
 
@@ -393,9 +393,9 @@ Accuracy on the temporal validation split (20% most recent transactions) with cu
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5679 | 0.4444 |
-| + numeric features | 0.6140 | 0.5084 |
-| + date features | 0.6043 | 0.5090 |
-| + domain features (all) | 0.6025 | 0.5087 |
+| TF-IDF only | 0.5546 | 0.4418 |
+| + numeric features | 0.5905 | 0.5045 |
+| + date features | 0.5792 | 0.4865 |
+| + domain features (all) | 0.5839 | 0.4881 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.

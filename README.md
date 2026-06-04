@@ -125,8 +125,8 @@ flowchart LR
 Four feature families, concatenated into a single feature matrix per transaction:
 
 **Text features** --- TF-IDF vectorization of transaction descriptions.
-- Word n-grams (1,2) on `description` and `remarks` fields separately (3,000 + 5,000 features)
-- Character n-grams (3,5) on combined text (2,000 features)
+- Word n-grams (1,2) on `description` and `remarks` fields separately (4,000 + 4,000 features)
+- Character n-grams (3,5) on combined text (1,000 features)
 - Sublinear TF scaling, accent stripping, HTML cleaning
 
 **Domain features** --- Config-driven indicators loaded from a YAML profile (`config/profiles/french_treasury.yaml`, selected via `TXCLS_FEATURE_PROFILE`).
@@ -207,7 +207,7 @@ src/transaction_classifier/
     routes/              — API route handlers
     auth.py              — API key authentication (predict + admin tiers)
     schemas.py           — request/response Pydantic models
-    middleware.py        — RequestTimingMiddleware
+    middleware.py        — LatencyMiddleware
   evaluation/            — visualization generation (confusion matrix, charts)
 scripts/
   generate_sample_data.py — synthetic dataset generator
