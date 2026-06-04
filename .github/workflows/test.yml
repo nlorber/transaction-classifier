@@ -11,15 +11,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
         with:
           python-version: "3.11"
 
       - name: Cache uv virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/uv
@@ -37,7 +37,7 @@ jobs:
         run: make typecheck
 
       - name: Test with coverage
-        run: uv run pytest --cov=transaction_classifier --cov-report=json --cov-fail-under=80 --tb=short
+        run: make test
 
       - name: Extract coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -48,7 +48,7 @@ jobs:
 
       - name: Update coverage badge
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ vars.COVERAGE_GIST_ID }}

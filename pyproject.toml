@@ -92,7 +92,7 @@ indent-style = "space"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "--cov=transaction_classifier --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=transaction_classifier --cov-report=term-missing --cov-report=json --cov-fail-under=80"
 
 [tool.mypy]
 python_version = "3.11"
