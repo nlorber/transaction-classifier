@@ -125,3 +125,34 @@ def test_corrupted_artifact_raises(tiny_model):
         store2 = ModelStore(tmpdir)
         with pytest.raises(RuntimeError, match="Hash mismatch"):
             store2.load_active()
+
+
+def test_promote_missing_version_raises(tmp_path):
+    store = ModelStore(str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        store.promote("v-does-not-exist")
+
+
+def test_has_update_false_before_any_load(tmp_path):
+    """has_update must not blow up when no 'current' symlink exists yet."""
+    store = ModelStore(str(tmp_path))
+    assert store.has_update() is False
+
+
+def test_fit_with_validation_enables_early_stopping(sample_df, domain_engine):
+    """The eval_set / early-stopping branch (the production default) is exercised."""
+    from transaction_classifier.core.features.pipeline import assemble_feature_matrix
+
+    tf = TfidfFeatureExtractor(
+        label_vocab_size=20, detail_vocab_size=20, char_vocab_size=20, min_df=1
+    )
+    X = assemble_feature_matrix(sample_df, tf, domain_engine, fit=True)
+    le = LabelEncoder()
+    y = le.fit_transform(sample_df["target"])
+
+    model = XGBoostModel(n_estimators=10, max_depth=2, verbosity=0, patience=2)
+    model.fit(X, y, X_val=X, y_val=y)
+
+    assert model.model is not None
+    # XGBoost records a best_iteration only when an eval_set drives early stopping.
+    assert model.model.best_iteration is not None
