@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 def split_by_date(
     df: pd.DataFrame,
     date_col: str = "posting_date",
-    train_ratio: float = 0.85,
+    train_ratio: float = 0.80,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Partition a DataFrame chronologically into training and validation sets.
 
