@@ -13,6 +13,9 @@ RUN uv sync --frozen --no-dev --extra serve --no-install-project
 COPY src/ src/
 RUN uv sync --frozen --no-dev --extra serve
 
+# Feature profile YAML is read at runtime via the default TXCLS_FEATURE_PROFILE path.
+COPY config/ config/
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000

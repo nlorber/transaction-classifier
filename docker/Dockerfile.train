@@ -18,4 +18,7 @@ RUN uv sync --frozen --no-dev --extra train --no-install-project
 COPY src/ src/
 RUN uv sync --frozen --no-dev --extra train
 
+# Feature profile YAML is read at runtime via the default TXCLS_FEATURE_PROFILE path.
+COPY config/ config/
+
 ENTRYPOINT ["python", "-m", "transaction_classifier.training.cli"]
