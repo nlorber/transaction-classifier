@@ -64,28 +64,28 @@ XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperpar
 flowchart LR
     subgraph Data Sources
         PG[(Postgres)]
-        CSV[(CSV\nlocal dev)]
+        CSV[(CSV<br/>local dev)]
     end
 
     subgraph Feature Pipeline
-        TF[TF-IDF\nword + char n-grams]
-        DOM[Domain Features\nentity detection, amount patterns]
-        NUM[Numeric Features\nlog amount, debit/credit flags]
-        DATE[Date Features\ncyclical encoding, period flags]
+        TF[TF-IDF<br/>word + char n-grams]
+        DOM[Domain Features<br/>entity detection, amount patterns]
+        NUM[Numeric Features<br/>log amount, debit/credit flags]
+        DATE[Date Features<br/>cyclical encoding, period flags]
     end
 
     subgraph Training
-        XGB[XGBoost\nearly stopping + checkpointing]
-        HPO[Optuna HPO\nBayesian search]
+        XGB[XGBoost<br/>early stopping + checkpointing]
+        HPO[Optuna HPO<br/>Bayesian search]
     end
 
     subgraph Artifact Store
-        VER[Versioned artifacts\nmodel + vectorizers + metadata]
-        SYM[Atomic symlink\npromotion]
+        VER[Versioned artifacts<br/>model + vectorizers + metadata]
+        SYM[Atomic symlink<br/>promotion]
     end
 
     subgraph Serving
-        API[FastAPI\nhot-reload]
+        API[FastAPI<br/>hot-reload]
     end
 
     PG --> TF
