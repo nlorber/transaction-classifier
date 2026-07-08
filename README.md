@@ -33,9 +33,9 @@ Cumulative accuracy on the temporal validation split. Each row adds one feature 
 | TF-IDF only | 0.5546 | 0.4418 |
 | + numeric | 0.5905 | 0.5045 |
 | + date | 0.5792 | 0.4865 |
-| + domain (all features) | 0.5839 | 0.4881 |
+| + domain (all features) | 0.5772 | 0.4834 |
 
-Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal.
+Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal. Reproduce with `uv run python scripts/eval_ablation.py` — committed run: [`reports/feature_ablation.json`](reports/feature_ablation.json).
 
 ### Model Comparison
 
@@ -43,9 +43,9 @@ Same feature matrix, same temporal split. XGBoost is the production choice; Ligh
 
 | Model | Balanced Accuracy | F1 (weighted) | Train time |
 |---|---|---|---|
-| **XGBoost** | **0.4881** | **0.5528** | 30.0s |
-| LightGBM | 0.4047 | 0.5145 | 26.5s |
-| Logistic Regression | 0.0115 | 0.0160 | 43.4s |
+| **XGBoost** | **0.4834** | **0.5471** | 36.6s |
+| LightGBM | 0.4004 | 0.5114 | 29.1s |
+| Logistic Regression | 0.0115 | 0.0160 | 52.7s |
 
 XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperparameter style. Logistic regression is not competitive on this task — the 80-class problem with sparse TF-IDF features and domain indicators benefits from tree-based feature interactions that linear models cannot capture. Reproduce with `uv run python scripts/compare_models.py`.
 

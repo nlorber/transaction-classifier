@@ -396,6 +396,6 @@ Accuracy on the temporal validation split (20% most recent transactions) with cu
 | TF-IDF only | 0.5546 | 0.4418 |
 | + numeric features | 0.5905 | 0.5045 |
 | + date features | 0.5792 | 0.4865 |
-| + domain features (all) | 0.5839 | 0.4881 |
+| + domain features (all) | 0.5772 | 0.4834 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.

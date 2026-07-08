@@ -1,20 +1,20 @@
 [
   {
     "model": "XGBoost",
-    "balanced_accuracy": 0.4881,
-    "f1_weighted": 0.5528,
-    "train_seconds": 30.0
+    "balanced_accuracy": 0.4834,
+    "f1_weighted": 0.5471,
+    "train_seconds": 36.6
   },
   {
     "model": "LightGBM",
-    "balanced_accuracy": 0.4047,
-    "f1_weighted": 0.5145,
-    "train_seconds": 26.5
+    "balanced_accuracy": 0.4004,
+    "f1_weighted": 0.5114,
+    "train_seconds": 29.1
   },
   {
     "model": "Logistic Regression",
     "balanced_accuracy": 0.0115,
     "f1_weighted": 0.016,
-    "train_seconds": 43.4
+    "train_seconds": 52.7
   }
 ]

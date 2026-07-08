@@ -1,0 +1,30 @@
+[
+  {
+    "feature_set": "TF-IDF only",
+    "n_features": 2006,
+    "accuracy": 0.5546,
+    "balanced_accuracy": 0.4418,
+    "train_seconds": 50.6
+  },
+  {
+    "feature_set": "+ numeric",
+    "n_features": 2014,
+    "accuracy": 0.5905,
+    "balanced_accuracy": 0.5045,
+    "train_seconds": 54.9
+  },
+  {
+    "feature_set": "+ date",
+    "n_features": 2027,
+    "accuracy": 0.5792,
+    "balanced_accuracy": 0.4865,
+    "train_seconds": 43.3
+  },
+  {
+    "feature_set": "+ domain (all features)",
+    "n_features": 2112,
+    "accuracy": 0.5772,
+    "balanced_accuracy": 0.4834,
+    "train_seconds": 36.5
+  }
+]
