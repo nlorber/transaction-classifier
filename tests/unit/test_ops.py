@@ -48,7 +48,7 @@ def ops_app(sample_df, domain_engine):
     app = FastAPI()
     app.state.predictor = engine
     app.state.store = loader
-    app.state.settings = Settings(sandbox_mode=False)
+    app.state.settings = Settings(sandbox_mode=False, auth_disabled=True)
     app.state.start_time = time.time()
     app.include_router(ops.router)
 

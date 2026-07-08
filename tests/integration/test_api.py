@@ -49,7 +49,7 @@ def client_with_model(sample_df, domain_engine):
         engine = Predictor(bundle, default_top_k=3, domain_engine=domain_engine)
         app.state.predictor = engine
         app.state.store = store
-        app.state.settings = Settings(artifact_dir=tmpdir)
+        app.state.settings = Settings(artifact_dir=tmpdir, auth_disabled=True)
         app.state.start_time = time.time()
 
         app.include_router(classify.router)
@@ -159,10 +159,12 @@ def client_with_auth(client_with_model):
     settings = client_with_model.app.state.settings
     settings.api_keys = ["test-predict-key"]
     settings.admin_api_keys = ["test-admin-key"]
+    settings.auth_disabled = False
     yield client_with_model
     # Reset
     settings.api_keys = []
     settings.admin_api_keys = []
+    settings.auth_disabled = True
 
 
 class TestAuthEnforcement:

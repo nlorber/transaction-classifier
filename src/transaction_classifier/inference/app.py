@@ -113,9 +113,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
         return
 
-    if not settings.api_keys:
+    if settings.auth_disabled:
         logger.warning(
-            "No TXCLS_API_KEYS configured — all requests will be accepted without authentication"
+            "TXCLS_AUTH_DISABLED is set — all requests will be accepted without authentication"
+        )
+    elif not settings.api_keys:
+        logger.warning(
+            "No TXCLS_API_KEYS configured — all requests will be rejected (403). "
+            "Set TXCLS_API_KEYS, or TXCLS_AUTH_DISABLED=true for local experimentation"
         )
 
     domain_engine = DomainFeatureEngine(settings.feature_profile)

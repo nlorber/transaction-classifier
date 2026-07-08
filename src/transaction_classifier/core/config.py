@@ -57,5 +57,8 @@ class Settings(BaseSettings):
     # --- Auth --------------------------------------------------------------
     api_keys: list[str] = []
     admin_api_keys: list[str] = []
+    # Fail-closed switch: with no keys configured, requests are rejected unless
+    # auth is explicitly disabled (local experimentation) or sandbox_mode is on.
+    auth_disabled: bool = False
 
     model_config = {"env_prefix": "TXCLS_"}

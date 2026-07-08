@@ -160,8 +160,9 @@ uv run tc-train --auto-promote -v
 TXCLS_SANDBOX_MODE=true uv run tc-serve
 
 # With a trained model (requires models/current symlink
-# created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current):
-# uv run tc-serve
+# created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current).
+# Auth fails closed: configure TXCLS_API_KEYS, or opt out explicitly for local use:
+# TXCLS_AUTH_DISABLED=true uv run tc-serve
 
 # Then open http://localhost:8000 for the interactive demo UI, or call the API:
 
@@ -249,6 +250,8 @@ TXCLS_PG_ROW_LIMIT=50000 \
 ```
 
 ## API Reference
+
+Prediction endpoints require `X-API-Key` (`TXCLS_API_KEYS`); `/ops/*` requires an admin key (`TXCLS_ADMIN_API_KEYS`). Auth **fails closed** — with no keys configured, requests are rejected unless you explicitly opt out with `TXCLS_AUTH_DISABLED=true` (or run in sandbox mode).
 
 ### `POST /classify`
 

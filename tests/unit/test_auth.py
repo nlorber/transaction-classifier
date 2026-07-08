@@ -10,12 +10,13 @@ from transaction_classifier.inference import auth
 from transaction_classifier.inference.auth import AuthContext, require_admin_key, require_api_key
 
 
-def _make_app(dependency, api_keys=None, admin_api_keys=None):
+def _make_app(dependency, api_keys=None, admin_api_keys=None, auth_disabled=False):
     """Create a minimal app with a single protected endpoint and settings on app.state."""
     app = FastAPI()
     app.state.settings = Settings(
         api_keys=api_keys or [],
         admin_api_keys=admin_api_keys or [],
+        auth_disabled=auth_disabled,
     )
 
     @app.get("/protected", dependencies=[Depends(dependency)])
@@ -48,9 +49,15 @@ class TestRequireApiKey:
         resp = TestClient(app).get("/protected", headers={"X-API-Key": "key-b"})
         assert resp.status_code == 200
 
-    def test_no_keys_configured_allows_all(self):
-        """Dev mode: if api_keys is empty, auth is bypassed."""
+    def test_no_keys_configured_fails_closed(self):
+        """No keys and no explicit opt-out: every request is rejected."""
         app = _make_app(require_api_key)
+        resp = TestClient(app).get("/protected")
+        assert resp.status_code == 403
+
+    def test_auth_disabled_allows_all(self):
+        """Explicit opt-out via TXCLS_AUTH_DISABLED bypasses auth."""
+        app = _make_app(require_api_key, auth_disabled=True)
         resp = TestClient(app).get("/protected")
         assert resp.status_code == 200
 
@@ -72,9 +79,15 @@ class TestRequireAdminKey:
         resp = TestClient(app).get("/protected", headers={"X-API-Key": "predict-key"})
         assert resp.status_code == 403
 
-    def test_no_admin_keys_configured_allows_all(self):
-        """Dev mode: if admin_api_keys is empty, auth is bypassed."""
+    def test_no_admin_keys_configured_fails_closed(self):
+        """No admin keys and no explicit opt-out: every request is rejected."""
         app = _make_app(require_admin_key)
+        resp = TestClient(app).get("/protected")
+        assert resp.status_code == 403
+
+    def test_auth_disabled_allows_admin(self):
+        """Explicit opt-out via TXCLS_AUTH_DISABLED bypasses admin auth."""
+        app = _make_app(require_admin_key, auth_disabled=True)
         resp = TestClient(app).get("/protected")
         assert resp.status_code == 200
 
@@ -110,9 +123,9 @@ class TestAuthContext:
         assert resp.status_code == 200
         assert resp.json()["tier"] == "admin"
 
-    def test_dev_mode_returns_predict_context(self):
+    def test_auth_disabled_returns_predict_context(self):
         app = FastAPI()
-        app.state.settings = Settings()
+        app.state.settings = Settings(auth_disabled=True)
 
         @app.get("/ctx")
         async def get_ctx(auth: AuthContext = _predict_dep):  # noqa: B008
