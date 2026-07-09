@@ -49,12 +49,12 @@ Thumbs.db
 # Node (safety)
 node_modules/
 
-# Claude / tooling
+# Tooling
 .claude/
 .ruff_cache/
 docs/superpowers/
 
-# Local dev config for Claude Code
+# Local dev config
 AGENTS.md
 
 
