@@ -56,6 +56,7 @@ class ModelStore:
         metrics: dict[str, Any],
         config: dict[str, Any],
         n_features: int = 0,
+        drift_baseline: dict[str, Any] | None = None,
     ) -> Manifest:
         """Persist a complete model bundle and return its manifest."""
         tag = f"v-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
@@ -89,6 +90,7 @@ class ModelStore:
             n_features=n_features,
             checksums=checksums,
             status="candidate",
+            drift_baseline=drift_baseline,
         )
         (dest / "manifest.json").write_text(manifest.model_dump_json(indent=2))
 

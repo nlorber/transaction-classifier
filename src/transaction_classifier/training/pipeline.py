@@ -14,6 +14,7 @@ from ..core.artifacts.store import ModelStore
 from ..core.config import Settings
 from ..core.data.source import DataSource
 from ..core.data.splitter import split_by_date, temporal_partition_stats
+from ..core.evaluation.drift import build_baseline
 from ..core.evaluation.metrics import evaluate_predictions
 from ..core.features.engine import DomainFeatureEngine
 from ..core.features.pipeline import assemble_feature_matrix
@@ -44,8 +45,17 @@ class TrainingPipeline:
         extractor, engine, X_train, X_val = self._build_features(cfg, train_df, val_known)
         model, train_secs = self._train(cfg, X_train, y_train, X_val, y_val)
         metrics = self._evaluate(model, X_val, y_val)
+        drift_baseline = self._drift_baseline(train_df, model, X_val, le)
         manifest = self._persist(
-            model, extractor, le, metrics, stats, len(val_known), X_train, train_secs
+            model,
+            extractor,
+            le,
+            metrics,
+            stats,
+            len(val_known),
+            X_train,
+            train_secs,
+            drift_baseline,
         )
         return manifest, baseline, len(le.classes_)
 
@@ -170,6 +180,17 @@ class TrainingPipeline:
         )
         return report._asdict()
 
+    def _drift_baseline(
+        self,
+        train_df: pd.DataFrame,
+        model: XGBoostModel,
+        X_val: spmatrix,  # noqa: N803
+        le: LabelEncoder,
+    ) -> dict[str, Any]:
+        """Freeze the reference distributions used by /ops/drift."""
+        logger.info("Computing drift baseline …")
+        return build_baseline(train_df, model.predict_proba(X_val), le.classes_)
+
     def _persist(
         self,
         model: XGBoostModel,
@@ -180,6 +201,7 @@ class TrainingPipeline:
         val_rows: int,
         X_train: spmatrix,  # noqa: N803
         train_secs: float,
+        drift_baseline: dict[str, Any],
     ) -> Manifest:
         cfg = self.settings
         logger.info("Storing artefacts …")
@@ -210,6 +232,7 @@ class TrainingPipeline:
             metrics=metrics,
             config=run_config,
             n_features=X_train.shape[1],
+            drift_baseline=drift_baseline,
         )
         logger.info("Stored version: %s", manifest.version)
         return manifest

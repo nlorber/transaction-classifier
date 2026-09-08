@@ -127,3 +127,26 @@ def test_predict_proba_rows_sum_to_one(sample_csv_path, domain_engine):
 
         row_sums = proba.sum(axis=1)
         np.testing.assert_allclose(row_sums, 1.0, atol=1e-5)
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_drift_baseline_survives_manifest_round_trip(sample_csv_path):
+    """Training must persist a drift baseline that reloads unchanged from disk."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        settings = _quick_settings(str(sample_csv_path), tmpdir)
+        provider = CsvDataSource(settings.data_path)
+        runner = TrainingPipeline(settings, provider)
+
+        manifest, _, _ = runner.execute()
+
+        assert manifest.drift_baseline is not None
+        assert len(manifest.drift_baseline["input_features"]) == 6
+        assert manifest.drift_baseline["reference_size"] > 0
+
+        store = ModelStore(tmpdir)
+        store.promote(manifest.version)
+        bundle = store.load_active()
+
+        # JSON has no integer keys, so a dict-keyed baseline would come back
+        # with stringified keys here. Parallel lists keep it identical.
+        assert bundle.manifest.drift_baseline == manifest.drift_baseline

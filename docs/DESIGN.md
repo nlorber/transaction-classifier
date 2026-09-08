@@ -285,7 +285,7 @@ The failed model's artifacts remain on disk (status `"candidate"` in `Manifest`)
 | Tier | Header | Config key | Protects |
 |------|--------|-----------|----------|
 | Prediction | `X-API-Key` | `TXCLS_API_KEYS` (comma-separated) | `POST /classify`, `POST /explain` |
-| Admin | `X-API-Key` | `TXCLS_ADMIN_API_KEYS` (comma-separated) | `POST /ops/refresh`, `POST /ops/confidence-histogram` |
+| Admin | `X-API-Key` | `TXCLS_ADMIN_API_KEYS` (comma-separated) | `POST /ops/refresh`, `POST /ops/confidence-histogram`, `POST /ops/drift` |
 
 ### Implementation
 

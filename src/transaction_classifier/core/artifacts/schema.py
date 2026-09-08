@@ -26,6 +26,9 @@ class Manifest(BaseModel):
     n_features: int = 0
     checksums: dict[str, str] = Field(default_factory=dict)
     status: str = "candidate"
+    # Frozen reference distributions for PSI drift scoring; None when the bundle
+    # carries no baseline, which /ops/drift surfaces as a 409.
+    drift_baseline: dict[str, Any] | None = None
 
 
 @dataclass

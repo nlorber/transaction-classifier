@@ -1,4 +1,4 @@
-"""Unit tests for admin/ops endpoints (refresh, confidence-histogram)."""
+"""Unit tests for admin/ops endpoints (refresh, confidence-histogram, drift)."""
 
 import time
 from unittest.mock import MagicMock, patch
@@ -39,7 +39,10 @@ def ops_app(sample_df, domain_engine):
     model = XGBoostModel(n_estimators=5, max_depth=2, verbosity=0, patience=None)
     model.fit(X, y)
 
-    manifest = Manifest(version="v-test", metrics={"accuracy": 0.5})
+    from transaction_classifier.core.evaluation.drift import build_baseline
+
+    drift_baseline = build_baseline(sample_df, model.predict_proba(X), le.classes_)
+    manifest = Manifest(version="v-test", metrics={"accuracy": 0.5}, drift_baseline=drift_baseline)
     bundle = ModelBundle(model=model, text_extractor=tf, label_encoder=le, manifest=manifest)
     engine = Predictor(bundle, default_top_k=3, domain_engine=domain_engine)
 
@@ -147,4 +150,86 @@ class TestConfidenceHistogram:
         )
         assert resp.status_code == 400
         assert "sandbox" in resp.json()["detail"].lower()
+        client.app.state.settings.sandbox_mode = False
+
+
+class TestDrift:
+    """POST /ops/drift endpoint."""
+
+    PAYLOAD = {
+        "transactions": [
+            {
+                "description": "URSSAF COTISATIONS",
+                "debit": 1234.56,
+                "posting_date": "2025-01-15",
+            },
+            {"description": "EDF FACTURE", "debit": 89.0, "posting_date": "2025-01-16"},
+        ],
+    }
+
+    # posting_date is optional, so this is a payload a real caller may send.
+    UNDATED_PAYLOAD = {
+        "transactions": [
+            {"description": "URSSAF COTISATIONS", "debit": 1234.56},
+            {"description": "EDF FACTURE", "debit": 89.0},
+        ],
+    }
+
+    def test_drift_returns_valid_structure(self, ops_app):
+        client, _, _ = ops_app
+        resp = client.post("/ops/drift", json=self.PAYLOAD)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model_version"] == "v-test"
+        assert data["n_samples"] == 2
+        assert data["reference_size"] > 0
+        assert data["output_reference_size"] > 0
+        assert set(data["input_drift"]) == {
+            "amount",
+            "desc_len",
+            "is_debit",
+            "has_reference",
+            "amount_bucket",
+            "weekday",
+        }
+        assert set(data["output_drift"]) == {
+            "predicted_class_distribution",
+            "confidence_distribution",
+        }
+        assert data["overall_verdict"] in {"stable", "moderate", "significant"}
+
+    def test_drift_omits_weekday_when_no_row_is_dated(self, ops_app):
+        """An absent optional posting_date must not read as a weekday shift."""
+        client, _, _ = ops_app
+        resp = client.post("/ops/drift", json=self.UNDATED_PAYLOAD)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "weekday" not in data["input_drift"]
+        assert set(data["input_drift"]) < {
+            "amount",
+            "desc_len",
+            "is_debit",
+            "has_reference",
+            "amount_bucket",
+            "weekday",
+        }
+
+    def test_drift_without_baseline_returns_409(self, ops_app):
+        client, _, engine = ops_app
+        engine.bundle.manifest.drift_baseline = None
+        resp = client.post("/ops/drift", json=self.PAYLOAD)
+        assert resp.status_code == 409
+        assert "baseline" in resp.json()["detail"].lower()
+
+    def test_drift_no_model_returns_503(self, ops_app):
+        client, _, _ = ops_app
+        client.app.state.predictor = None
+        resp = client.post("/ops/drift", json=self.PAYLOAD)
+        assert resp.status_code == 503
+
+    def test_drift_sandbox_mode_returns_400(self, ops_app):
+        client, _, _ = ops_app
+        client.app.state.settings.sandbox_mode = True
+        resp = client.post("/ops/drift", json=self.PAYLOAD)
+        assert resp.status_code == 400
         client.app.state.settings.sandbox_mode = False

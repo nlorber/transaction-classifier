@@ -94,10 +94,18 @@ beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 
 - **Quality gate:** promotion is blocked by floor thresholds (not targets) so a
   catastrophically bad retrain (e.g. cold-start on sparse data) never replaces a good model;
   on failure the previous `current` symlink stays in place.
-- **Drift monitoring:** the serving layer exposes `POST /ops/confidence-histogram` to track
-  the confidence distribution over time — a leftward shift signals distribution drift. Re-check
-  **balanced accuracy** (not just top-1) on freshly labeled recent data, and watch for changes
-  in transaction-label vocabulary and entity naming.
+- **Drift monitoring:** `POST /ops/drift` scores a batch by Population Stability Index against
+  reference distributions frozen in the manifest at training time — six input features
+  (`amount`, `desc_len`, `is_debit`, `has_reference`, `amount_bucket`, `weekday`) plus the
+  predicted-class and confidence distributions. Thresholds are the standard `< 0.10` stable,
+  `< 0.25` moderate, above that significant. No labels required, so it runs on live traffic.
+  `POST /ops/confidence-histogram` remains available for the raw confidence shape.
+  Two caveats: the output reference is the model's *own validation predictions*, not the true
+  label distribution, since an imbalanced multi-class model systematically under-predicts rare
+  classes; and the predicted-class PSI needs roughly ten samples per class before it says
+  anything — smaller batches leave most classes empty and inflate the score.
+  None of this replaces re-checking **balanced accuracy** (not just top-1) on freshly labeled
+  recent data, or watching for changes in transaction-label vocabulary and entity naming.
 - **Retraining:** the model trains in seconds, so scheduled retraining on recent labeled data
   is cheap; pair it with the quality gate above. Re-evaluate on a fresh temporal split each time
   rather than reusing an old validation window.

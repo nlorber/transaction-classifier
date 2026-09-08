@@ -355,6 +355,70 @@ Response:
 }
 ```
 
+### `POST /ops/drift`
+
+PSI drift report for a batch, scored against reference distributions frozen in the model's
+manifest at training time. Covers input features and predictions, so no ground-truth labels are
+needed. Requires an admin API key.
+
+```bash
+curl -X POST http://localhost:8000/ops/drift \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-admin-key" \
+  -d '{
+    "transactions": [
+      {
+        "description": "URSSAF COTISATIONS",
+        "remarks": "PRLV SEPA",
+        "debit": 1234.56,
+        "posting_date": "2025-01-15"
+      }
+    ]
+  }'
+```
+
+Response:
+
+```json
+{
+  "model_version": "v-20260301-120000",
+  "n_samples": 300,
+  "reference_size": 6006,
+  "output_reference_size": 1502,
+  "input_drift": {
+    "amount":        {"psi": 0.0323, "verdict": "stable"},
+    "desc_len":      {"psi": 0.0152, "verdict": "stable"},
+    "is_debit":      {"psi": 0.0002, "verdict": "stable"},
+    "has_reference": {"psi": 0.0021, "verdict": "stable"},
+    "amount_bucket": {"psi": 0.0419, "verdict": "stable"},
+    "weekday":       {"psi": 0.0089, "verdict": "stable"}
+  },
+  "output_drift": {
+    "predicted_class_distribution": {"psi": 0.0793, "verdict": "stable"},
+    "confidence_distribution":      {"psi": 0.0111, "verdict": "stable"}
+  },
+  "overall_verdict": "stable"
+}
+```
+
+Verdicts use the standard PSI thresholds: `< 0.10` stable, `< 0.25` moderate, otherwise
+significant. `overall_verdict` reflects the worst individual score.
+
+Notes:
+
+- Bins are frozen in the baseline, so there is no `n_bins` parameter — rebinning would compare
+  against proportions computed on different bins.
+- Returns `409` if the loaded model carries no baseline; retrain to populate it.
+- `predicted_class_distribution` needs a batch substantially larger than the class count to be
+  meaningful. Below roughly 10 samples per class, most classes draw zero predictions by chance
+  alone and the PSI inflates — read the input features and confidence in that case.
+- The two reference distributions rest on different splits, so both sizes are returned next to
+  `n_samples` for callers to judge against: `reference_size` (training rows) backs `input_drift`,
+  `output_reference_size` (held-out validation rows) backs `output_drift`.
+- `posting_date` is optional, and rows without one are excluded from the `weekday` score rather
+  than counted at an imputed weekday. If no row in the batch carries a parseable date, `weekday`
+  is omitted from `input_drift` entirely — treat its keys as a subset of the six above.
+
 ### `POST /explain`
 
 Per-transaction SHAP feature contributions. Returns the top features that drove the model toward each prediction. Requires the `explain` extra (`uv sync --extra explain`).

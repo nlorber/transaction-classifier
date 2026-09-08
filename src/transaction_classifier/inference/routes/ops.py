@@ -81,3 +81,48 @@ def confidence_histogram(
             "counts": [int(c) for c in counts],
         },
     }
+
+
+@router.post("/drift")
+def drift_report(body: ClassifyRequest, request: Request) -> dict[str, Any]:
+    """Score a batch for PSI drift against the model's training-time baseline.
+
+    Covers input features and predictions (no ground-truth labels needed).
+    Bins are frozen in the baseline, so they are deliberately not tunable here —
+    rebinning would compare against proportions computed on different bins.
+    """
+    settings = request.app.state.settings
+    if settings.sandbox_mode:
+        raise HTTPException(status_code=400, detail="Not available in sandbox mode")
+
+    predictor = request.app.state.predictor
+    if predictor is None:
+        raise HTTPException(status_code=503, detail="No model loaded")
+
+    baseline = predictor.bundle.manifest.drift_baseline
+    if baseline is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Model has no drift baseline; retrain to enable drift monitoring",
+        )
+
+    frame = predictor.build_frame(body.transactions)
+    from ...core.evaluation.drift import evaluate_drift
+    from ...core.features.pipeline import assemble_feature_matrix
+
+    if predictor.domain_engine is None:
+        raise HTTPException(status_code=500, detail="domain_engine not configured")
+    X = assemble_feature_matrix(
+        frame, predictor.bundle.text_extractor, predictor.domain_engine, fit=False
+    )
+    proba = predictor.bundle.model.predict_proba(X)
+
+    report = evaluate_drift(frame, proba, predictor.bundle.label_encoder.classes_, baseline)
+
+    return {
+        "model_version": predictor.bundle.manifest.version,
+        "n_samples": len(body.transactions),
+        "reference_size": baseline["reference_size"],
+        "output_reference_size": baseline["output_reference_size"],
+        **report,
+    }
