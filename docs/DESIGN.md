@@ -408,13 +408,13 @@ Rare-class recall is the mean recall over the 20 test-block classes in the botto
 
 ### Feature ablation
 
-Accuracy on the held-out temporal test block (15% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same XGBoost hyperparameters (500 estimators, depth 6, lr 0.05).
+Accuracy on the held-out temporal test block (15% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same unweighted XGBoost hyperparameters (500 estimators, depth 6, lr 0.05). Reproduce with `uv run python scripts/eval_ablation.py` — committed run: [`reports/feature_ablation.json`](../reports/feature_ablation.json).
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5546 | 0.4418 |
-| + numeric features | 0.5905 | 0.5045 |
-| + date features | 0.5792 | 0.4865 |
-| + domain features (all) | 0.5772 | 0.4834 |
+| TF-IDF only | 0.5324 | 0.4007 |
+| + numeric | 0.5909 | 0.4875 |
+| + date | 0.5794 | 0.4728 |
+| + domain (all features) | 0.5856 | 0.4831 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.

@@ -46,19 +46,24 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 ## Metrics
 
 Evaluated on the held-out temporal test block (the most recent 15% of transactions, which neither
-early stopping nor tuning ever sees; n = **1,502** evaluation samples).
+early stopping nor tuning ever sees; n = **1,127** evaluation samples), with balanced class
+weights (the default).
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 0.584 |
-| Top-3 accuracy | 0.830 |
-| Top-5 accuracy | 0.909 |
-| Top-10 accuracy | 0.987 |
-| Balanced accuracy | 0.488 |
+| Top-1 accuracy | 0.502 |
+| Top-3 accuracy | 0.807 |
+| Top-5 accuracy | 0.907 |
+| Top-10 accuracy | 0.988 |
+| Balanced accuracy | 0.569 |
 
-**Read the gap between accuracy (0.584) and balanced accuracy (0.488) carefully:** the macro
-view is weaker than the headline because minority classes underperform. Top-1 is a poor
-summary of this system; the top-K ranking metrics are the ones aligned with its intended use.
+**Read accuracy (0.502) and balanced accuracy (0.569) together:** balanced class weights push
+the model toward rare account codes, so the macro view sits *above* the headline. Without them
+the order flips (0.581 vs 0.479, [`reports/class_weighting.json`](../reports/class_weighting.json)):
+frequent codes are predicted well and rare ones are missed. Top-1 is a poor summary of this
+system; the top-K ranking metrics are the ones aligned with its intended use. On this synthetic
+data no classifier can exceed a Bayes-optimal top-1 of 0.678 or top-5 of 0.949 on the same rows
+([`reports/ceiling.json`](../reports/ceiling.json)).
 
 Model comparison (same hyperparameter style): XGBoost (balanced acc 0.488, F1-weighted 0.553)
 beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 0.016) — the

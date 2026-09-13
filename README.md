@@ -14,29 +14,29 @@ Trained on **synthetic data** (7,508 transactions, 80 account classes). On real 
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 58.7% |
-| Top-3 accuracy | 83.0% |
-| Top-5 accuracy | 90.9% |
-| Top-10 accuracy | 98.7% |
-| Balanced accuracy | 49.3% |
+| Top-1 accuracy | 50.2% |
+| Top-3 accuracy | 80.7% |
+| Top-5 accuracy | 90.7% |
+| Top-10 accuracy | 98.8% |
+| Balanced accuracy | 56.9% |
 | Classes | 80 |
-| Evaluation samples | 1,502 |
-| Bayes ceiling, top-1 / top-5 | 67.8% / 94.9% |
+| Evaluation samples | 1,127 |
+| Bayes ceiling, top-1 / top-5 | 67.8% / 94.8% |
 
-The ceiling row is the Bayes-optimal classifier under the generator's own sampling process, scored on the same test rows: no model can beat it in expectation, so it is the yardstick for every synthetic number above ([`scripts/estimate_ceiling.py`](scripts/estimate_ceiling.py) — committed run: [`reports/ceiling.json`](reports/ceiling.json)).
+All rows are measured on the held-out temporal test block (the most recent 15% of transactions, never seen by early stopping or tuning). The ceiling row is the Bayes-optimal classifier under the generator's own sampling process, scored on the same test rows: no model can beat it in expectation, so it is the yardstick for every synthetic number above ([`scripts/estimate_ceiling.py`](scripts/estimate_ceiling.py) — committed run: [`reports/ceiling.json`](reports/ceiling.json)).
 
-See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and the accuracy-vs-balanced-accuracy gap matter more.
+See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and balanced accuracy matter more. Training uses balanced class weights, which trade about 8pp of top-1 for +9pp balanced accuracy and +19pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)).
 
 ### Feature Ablation
 
-Cumulative accuracy on the held-out temporal test block. Each row adds one feature family. Same XGBoost hyperparameters throughout.
+Cumulative accuracy on the held-out temporal test block. Each row adds one feature family. Same unweighted XGBoost hyperparameters throughout.
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5546 | 0.4418 |
-| + numeric | 0.5905 | 0.5045 |
-| + date | 0.5792 | 0.4865 |
-| + domain (all features) | 0.5772 | 0.4834 |
+| TF-IDF only | 0.5324 | 0.4007 |
+| + numeric | 0.5909 | 0.4875 |
+| + date | 0.5794 | 0.4728 |
+| + domain (all features) | 0.5856 | 0.4831 |
 
 Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal. Reproduce with `uv run python scripts/eval_ablation.py` — committed run: [`reports/feature_ablation.json`](reports/feature_ablation.json).
 
