@@ -100,3 +100,20 @@ def test_explain_max_features_limits_output(engine_with_model):
     txns = [TransactionPayload(description="EDF FACTURE", debit=89.0)]
     results = engine_with_model.explain(txns, max_features=3)
     assert len(results[0].contributions) <= 3
+
+
+def test_explainer_is_built_once_per_predictor(engine_with_model, monkeypatch):
+    """TreeExplainer walks every tree on construction; it must not run per request."""
+    shap = pytest.importorskip("shap")
+    real_explainer = shap.TreeExplainer
+    calls: list[object] = []
+
+    def counting_explainer(*args, **kwargs):
+        calls.append(args)
+        return real_explainer(*args, **kwargs)
+
+    monkeypatch.setattr(shap, "TreeExplainer", counting_explainer)
+    txns = [TransactionPayload(description="EDF FACTURE", debit=89.0)]
+    engine_with_model.explain(txns)
+    engine_with_model.explain(txns)
+    assert len(calls) == 1

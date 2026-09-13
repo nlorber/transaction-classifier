@@ -1,7 +1,8 @@
 """Predictor — turns raw transactions into scored predictions."""
 
 import logging
-from typing import TYPE_CHECKING
+from functools import cached_property
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -71,6 +72,19 @@ class Predictor:
             )
         return items
 
+    @cached_property
+    def _explainer(self) -> Any:
+        """SHAP TreeExplainer for this bundle, built on the first explain call.
+
+        Construction walks every tree, so it is paid once per loaded model: a
+        hot-reload builds a new Predictor, and with it a new explainer.
+        """
+        import shap
+
+        if self.bundle.model.model is None:
+            raise ValueError("Model has not been fitted")
+        return shap.TreeExplainer(self.bundle.model.model.get_booster())
+
     def explain(
         self,
         transactions: list[TransactionPayload],
@@ -78,8 +92,6 @@ class Predictor:
         target_class: str | None = None,
     ) -> list["ExplainItemResult"]:
         """Return per-transaction SHAP feature contributions."""
-        import shap
-
         from ..core.features.pipeline import collect_feature_names
         from .schemas import ExplainItemResult, FeatureContribution
 
@@ -93,9 +105,7 @@ class Predictor:
             frame, self.bundle.text_extractor, self.domain_engine
         )
 
-        if self.bundle.model.model is None:
-            raise ValueError("Model has not been fitted")
-        explainer = shap.TreeExplainer(self.bundle.model.model.get_booster())
+        explainer = self._explainer
 
         proba = self.bundle.model.predict_proba(X)
         classes = self.bundle.label_encoder.classes_
