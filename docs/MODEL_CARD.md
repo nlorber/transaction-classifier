@@ -74,6 +74,11 @@ beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 
   production (predict future transactions from past patterns), avoids the future-information
   leakage a random split would introduce, and keeps the stopping round from being chosen on the
   same rows that grade it.
+- **Class weighting:** training rows carry balanced sample weights (`balanced_class_weights`,
+  default on), so rare account codes weigh as much as frequent ones in the loss. On the test
+  block this costs about 8pp top-1 and 1pp top-5 for +9pp balanced accuracy
+  ([`reports/class_weighting.json`](../reports/class_weighting.json)); every manifest records
+  per-class recall.
 - **Known synthetic-vs-real gap:** the generator uses uniform entity distribution and random
   label templates, which removes the client-specific seasonal and entity patterns that the
   domain/date features were designed to exploit. On the synthetic set those feature families

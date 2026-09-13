@@ -118,6 +118,8 @@ def run(
     )
 
     study.enqueue_trial(BASELINE_PARAMS)
+    from sklearn.utils.class_weight import compute_sample_weight
+
     objective = build_objective_fn(
         X_train,
         y_train,
@@ -125,6 +127,9 @@ def run(
         y_val,
         n_classes,
         device=settings.device,
+        sample_weight=(
+            compute_sample_weight("balanced", y_train) if settings.balanced_class_weights else None
+        ),
     )
 
     logger.info(

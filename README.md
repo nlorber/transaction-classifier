@@ -110,7 +110,7 @@ flowchart LR
 
 ## Design Decisions
 
-**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (80 classes, long-tail distribution). Gradient-boosted trees handle this natively without the sampling gymnastics or architecture tuning that neural nets require. Training completes in seconds, not hours, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
+**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (80 classes, long-tail distribution). Gradient-boosted trees handle sparse, mixed-type features without the architecture tuning that neural nets require, and imbalance is handled with balanced per-row sample weights rather than resampling — trading about 8pp of top-1 for +9pp balanced accuracy and +19pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)). Training completes in seconds, not hours, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
 
 **Why TF-IDF + domain features, not embeddings.** French accounting transaction text is formulaic: `URSSAF COTISATIONS`, `PRLV SEPA CPY:FR123`. Pattern-based features (entity detection, regex-extracted markers) outperform dense embeddings because the signal is in known keywords and structural patterns, not semantic meaning. TF-IDF character n-grams capture morphological variations (e.g., `COTISATION` vs `COTISATIONS`) without a pretrained language model. The feature space is sparse but highly discriminative for this domain.
 

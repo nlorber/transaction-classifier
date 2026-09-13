@@ -9,6 +9,21 @@ from transaction_classifier.training.hpo.objective import build_objective_fn
 
 
 @patch("transaction_classifier.training.hpo.objective.xgb")
+def test_sample_weight_reaches_training_dmatrix(mock_xgb):
+    """The search must train on the same row weights as the production pipeline."""
+    x_train, y_train = np.random.rand(3, 2), np.array([0, 1, 2])
+    x_val, y_val = np.random.rand(2, 2), np.array([0, 1])
+    weights = np.array([1.0, 2.0, 3.0])
+
+    build_objective_fn(x_train, y_train, x_val, y_val, n_classes=3, sample_weight=weights)
+    assert mock_xgb.DMatrix.call_args_list[0].kwargs["weight"] is weights
+
+    mock_xgb.reset_mock()
+    build_objective_fn(x_train, y_train, x_val, y_val, n_classes=3)
+    assert mock_xgb.DMatrix.call_args_list[0].kwargs["weight"] is None
+
+
+@patch("transaction_classifier.training.hpo.objective.xgb")
 @patch("transaction_classifier.training.hpo.objective.draw_hyperparams")
 def test_objective_returns_accuracy(mock_draw_hyperparams, mock_xgb):
     """Test that the objective function returns accuracy score."""

@@ -7,7 +7,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy.sparse import spmatrix
+from sklearn.metrics import recall_score
 from sklearn.preprocessing import LabelEncoder
+from sklearn.utils.class_weight import compute_sample_weight
 
 from ..core.artifacts.schema import Manifest
 from ..core.artifacts.store import ModelStore
@@ -55,7 +57,7 @@ class TrainingPipeline:
             cfg, train_df, val_known, test_known
         )
         model, train_secs = self._train(cfg, X_train, y_train, X_val, y_val)
-        metrics = self._evaluate(model, X_test, y_test)
+        metrics = self._evaluate(model, X_test, y_test, le)
         drift_baseline = self._drift_baseline(train_df, model, X_test, le)
         manifest = self._persist(
             model,
@@ -158,9 +160,10 @@ class TrainingPipeline:
         y_val: Labels,
     ) -> tuple[XGBoostModel, float]:
         logger.info(
-            "Training XGBoostModel (%d rounds, depth=%d) …",
+            "Training XGBoostModel (%d rounds, depth=%d, balanced weights=%s) …",
             cfg.n_estimators,
             cfg.max_depth,
+            cfg.balanced_class_weights,
         )
         t0 = time.time()
         model = XGBoostModel(
@@ -174,7 +177,11 @@ class TrainingPipeline:
             log_every=10,
             checkpoint_dir=str(cfg.artifact_dir) + "/checkpoints",
         )
-        model.fit(X_train, y_train, X_val=X_val, y_val=y_val)
+        # Early stopping still monitors the unweighted validation loss.
+        weights = (
+            compute_sample_weight("balanced", y_train) if cfg.balanced_class_weights else None
+        )
+        model.fit(X_train, y_train, X_val=X_val, y_val=y_val, sample_weight=weights)
         train_secs = time.time() - t0
         logger.info("Training finished (%.1fs)", train_secs)
         return model, train_secs
@@ -184,6 +191,7 @@ class TrainingPipeline:
         model: XGBoostModel,
         X_test: spmatrix,  # noqa: N803
         y_test: Labels,
+        le: LabelEncoder,
     ) -> dict[str, Any]:
         logger.info("Evaluating on held-out test block …")
         y_hat = model.predict(X_test)
@@ -194,7 +202,16 @@ class TrainingPipeline:
             report.balanced_accuracy,
             report.f1_weighted,
         )
-        return report._asdict()
+        metrics: dict[str, Any] = report._asdict()
+        # Averages hide whether rare codes are learned at all; record recall for
+        # every class present in the test block (absent classes have no recall).
+        present = np.unique(y_test)
+        recall = recall_score(y_test, y_hat, labels=present, average=None, zero_division=0)
+        metrics["per_class_recall"] = {
+            str(code): round(float(value), 4)
+            for code, value in zip(le.classes_[present], recall, strict=True)
+        }
+        return metrics
 
     def _drift_baseline(
         self,
@@ -231,6 +248,7 @@ class TrainingPipeline:
             "learning_rate": cfg.learning_rate,
             "patience": cfg.patience,
             "max_bin": cfg.max_bin,
+            "balanced_class_weights": cfg.balanced_class_weights,
             "tfidf_max_label": cfg.tfidf_max_label,
             "tfidf_max_detail": cfg.tfidf_max_detail,
             "tfidf_max_char": cfg.tfidf_max_char,

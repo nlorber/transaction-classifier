@@ -1,0 +1,26 @@
+[
+  {
+    "weighting": "unweighted",
+    "top1_accuracy": 0.5812,
+    "top3_accuracy": 0.8243,
+    "top5_accuracy": 0.9175,
+    "balanced_accuracy": 0.4787,
+    "rare_class_mean_recall": 0.375,
+    "rare_classes": 20,
+    "best_iteration": 332,
+    "max_rounds": 500,
+    "train_seconds": 50.0
+  },
+  {
+    "weighting": "balanced",
+    "top1_accuracy": 0.5022,
+    "top3_accuracy": 0.8075,
+    "top5_accuracy": 0.9068,
+    "balanced_accuracy": 0.5689,
+    "rare_class_mean_recall": 0.5637,
+    "rare_classes": 20,
+    "best_iteration": 464,
+    "max_rounds": 500,
+    "train_seconds": 65.6
+  }
+]

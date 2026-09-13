@@ -362,10 +362,25 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | `reg_alpha` (L1) | 1.0 | Encourages sparsity in leaf weights. Important when TF-IDF features create thousands of weak signals -- L1 pushes irrelevant features toward zero contribution. |
-| `reg_lambda` (L2) | 5.0 | Aggressive ridge penalty. Prevents any single tree from overfitting rare classes with few samples. Higher than typical defaults (1.0) because class imbalance is severe in accounting data. |
+| `reg_lambda` (L2) | 5.0 | Aggressive ridge penalty. Shrinks leaf weights so no single tree overfits the handful of rows behind a rare account code. Higher than the typical default (1.0) because many codes have fewer than 50 samples. |
 | `min_child_weight` | 10 | Minimum sum of instance weight in a child node. Prevents splits on tiny subsets, which is common when rare account codes have <50 samples. |
 | `gamma` | 0.5 | Minimum loss reduction for a split. Acts as a pruning threshold -- splits that don't improve loss by at least 0.5 are rejected. |
-| `max_delta_step` | 1 | Bounds the weight update per tree. Stabilizes training on imbalanced multi-class problems where a few dominant classes can drive large gradient updates. |
+| `max_delta_step` | 1 | Bounds the weight update per tree, keeping multi-class updates stable when a few frequent classes dominate the early gradients. |
+
+These parameters keep rare classes from being *overfit*; none of them makes the model *predict* rare classes more often. That is the job of the class weights below.
+
+### Class imbalance
+
+`TXCLS_BALANCED_CLASS_WEIGHTS=true` (the default) weights each training row by `n_samples / (n_classes × class_count)`, so every account code contributes equally to the loss. Early stopping still monitors the unweighted validation loss, and HPO trains on the same weights so it tunes the model that ships. Because `min_child_weight` sums *weighted* hessians, up-weighted rare-class rows reach it with fewer samples.
+
+Measured on the held-out test block with the production hyperparameters (`uv run python scripts/eval_class_weights.py` — committed run: [`reports/class_weighting.json`](../reports/class_weighting.json)):
+
+| Weighting | Top-1 | Top-3 | Top-5 | Balanced accuracy | Rare-class recall |
+|---|---|---|---|---|---|
+| none | 0.5812 | 0.8243 | 0.9175 | 0.4787 | 0.3750 |
+| **balanced (default)** | **0.5022** | **0.8075** | **0.9068** | **0.5689** | **0.5637** |
+
+Rare-class recall is the mean recall over the 20 test-block classes in the bottom quartile of training counts. Balanced weights trade about 8pp of top-1 and 1pp of top-5 for +9pp balanced accuracy and +19pp recall on rare codes. The system is a top-K suggestion tool with an accountant confirming the code, so a rare account reliably reaching the shortlist is worth more than extra top-1 hits on frequent ones; set the flag to `false` where unattended top-1 automation matters more. Every manifest records `per_class_recall` on the test block, so the effect can be checked code by code.
 
 ### Stochastic boosting
 

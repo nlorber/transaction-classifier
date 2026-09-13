@@ -23,9 +23,14 @@ def build_objective_fn(
     y_val: np.ndarray[Any, np.dtype[Any]],
     n_classes: int,
     device: str = "cpu",
+    sample_weight: np.ndarray[Any, np.dtype[Any]] | None = None,
 ) -> Callable[[optuna.Trial], float]:
-    """Return a callable that Optuna will invoke on each trial."""
-    dtrain = xgb.DMatrix(X_train, label=y_train)
+    """Return a callable that Optuna will invoke on each trial.
+
+    *sample_weight* should match what training will use, so the search tunes
+    the model that actually ships.
+    """
+    dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weight)
     dval = xgb.DMatrix(X_val, label=y_val)
 
     def _objective(trial: optuna.Trial) -> float:

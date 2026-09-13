@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     max_bin: int = 256
     device: str = "cpu"
     random_state: int = 42
+    # Weight each training row by n_samples / (n_classes * class_count) so rare
+    # account codes are not drowned out by frequent ones. Trades top-1 accuracy
+    # for balanced accuracy and rare-class recall (docs/DESIGN.md, "Class imbalance").
+    balanced_class_weights: bool = True
 
     # --- Temporal split ----------------------------------------------------
     # Train, then validation (early stopping, HPO), then the remaining most

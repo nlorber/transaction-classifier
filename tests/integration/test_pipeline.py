@@ -155,3 +155,31 @@ def test_drift_baseline_survives_manifest_round_trip(sample_csv_path):
         # JSON has no integer keys, so a dict-keyed baseline would come back
         # with stringified keys here. Parallel lists keep it identical.
         assert bundle.manifest.drift_baseline == manifest.drift_baseline
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize("balanced", [True, False])
+def test_balanced_class_weights_setting_drives_sample_weight(sample_csv_path, balanced):
+    """The setting decides whether training rows are reweighted; recall is always recorded."""
+    from unittest.mock import patch
+
+    from transaction_classifier.core.models.xgboost_model import XGBoostModel
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        settings = _quick_settings(str(sample_csv_path), tmpdir)
+        settings.balanced_class_weights = balanced
+        runner = TrainingPipeline(settings, CsvDataSource(settings.data_path))
+
+        real_fit = XGBoostModel.fit
+        with patch.object(XGBoostModel, "fit", autospec=True, side_effect=real_fit) as fit:
+            manifest, _, _ = runner.execute()
+
+        weights = fit.call_args.kwargs["sample_weight"]
+        if balanced:
+            # The fixture's training block holds one class twice, so weights differ.
+            assert len(set(weights)) > 1
+        else:
+            assert weights is None
+        assert manifest.config["balanced_class_weights"] is balanced
+        recall = manifest.metrics["per_class_recall"]
+        assert recall and all(0.0 <= value <= 1.0 for value in recall.values())
