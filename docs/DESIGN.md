@@ -309,22 +309,24 @@ Key comparison uses `hmac.compare_digest` to prevent timing side-channel attacks
 # inference/auth.py :: _matches_any
 def _matches_any(candidate: str, allowed: list[str]) -> bool:
     encoded = candidate.encode()
-    return any(hmac.compare_digest(encoded, k.encode()) for k in allowed)
+    results = [hmac.compare_digest(encoded, k.encode()) for k in allowed]
+    return any(results)
 ```
 
-Note: the generator is fully consumed by `any()` only after every `hmac.compare_digest` call has run — there is no short-circuit on the first match, so comparison time does not leak the key's position. (`test_all_keys_compared_when_first_matches` asserts every key is compared even when the first one matches.)
+The list comprehension matters: it runs `hmac.compare_digest` against every configured key before `any()` sees a result. A generator would not — `any()` stops pulling from a generator at the first `True`, so response time would reveal the matching key's position in the list. (`test_all_keys_compared_when_first_matches` asserts every key is compared even when the first one matches.)
 
-### Dev mode bypass
+### Fail closed, with an explicit opt-out
 
-When the key list is empty (the default), auth is disabled but still returns a typed context:
+An empty key list means *nobody* is authorised, not everybody: with no keys configured, every request is rejected with `403`. Auth is skipped only on an explicit opt-out:
 
 ```python
-# inference/auth.py :: require_api_key
-if not keys:
-    return AuthContext(tier="predict")
+# inference/auth.py :: _auth_bypassed
+def _auth_bypassed(request: Request) -> bool:
+    settings = request.app.state.settings
+    return bool(settings.auth_disabled or settings.sandbox_mode)
 ```
 
-This lets developers run the API locally without configuring keys. In production, set `TXCLS_API_KEYS` and `TXCLS_ADMIN_API_KEYS`.
+`TXCLS_AUTH_DISABLED=true` is for local experimentation; sandbox mode serves fixed predictions with no model. In production, set `TXCLS_API_KEYS` and `TXCLS_ADMIN_API_KEYS` — a deployment that forgets them locks the API instead of opening it.
 
 ### SQL query configuration
 
