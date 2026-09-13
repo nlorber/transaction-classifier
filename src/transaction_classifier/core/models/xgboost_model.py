@@ -215,8 +215,12 @@ class XGBoostModel(ClassifierBase):
         if not self._ready or self.model is None:
             raise ValueError("Model has not been fitted")
         booster = self.model.get_booster()
-        dm = xgb.DMatrix(X)
-        preds = booster.predict(dm)
+        # Early stopping leaves the trailing rounds in the booster (and in the
+        # persisted file); score only up to the best one. The attribute survives
+        # persist/restore, and (0, 0) means every tree when early stopping never ran.
+        best = booster.attr("best_iteration")
+        iteration_range = (0, int(best) + 1) if best is not None else (0, 0)
+        preds = booster.predict(xgb.DMatrix(X), iteration_range=iteration_range)
         if preds.ndim == 1 and self.n_classes_ and self.n_classes_ > 2:
             preds = preds.reshape(-1, self.n_classes_)
         return preds
