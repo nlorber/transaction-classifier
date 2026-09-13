@@ -65,9 +65,12 @@ system; the top-K ranking metrics are the ones aligned with its intended use. On
 data no classifier can exceed a Bayes-optimal top-1 of 0.678 or top-5 of 0.949 on the same rows
 ([`reports/ceiling.json`](../reports/ceiling.json)).
 
-Model comparison (same hyperparameter style): XGBoost (balanced acc 0.488, F1-weighted 0.553)
-beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 0.016) — the
-80-class sparse-feature problem needs tree-based feature interactions.
+Model comparison on the same features and split
+([`reports/model_comparison.json`](../reports/model_comparison.json)): on this synthetic data a
+scaled logistic regression is a close competitor. It leads on top-1 (0.596 vs 0.581 unweighted)
+and weighted F1, while XGBoost leads on top-5 (0.917 vs 0.889 unweighted; 0.907 vs 0.868 with
+balanced weights). LightGBM trails both. Neither model was hyperparameter-searched for the
+comparison.
 
 ## Training & Evaluation Data
 

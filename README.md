@@ -42,15 +42,17 @@ Date and domain features show marginal or negative lift on synthetic data becaus
 
 ### Model Comparison
 
-Same feature matrix, same temporal split. XGBoost is the production choice; LightGBM and logistic regression are baselines.
+Same feature matrix, same temporal split, scored on the held-out test block. XGBoost runs through the production wrapper and hyperparameters (the bold row is the shipped configuration); logistic regression is a `MaxAbsScaler` + `saga` pipeline at default regularisation; LightGBM is a lightly configured baseline. Logistic regression and XGBoost are each trained without and with balanced class weights.
 
-| Model | Balanced Accuracy | F1 (weighted) | Train time |
-|---|---|---|---|
-| **XGBoost** | **0.4834** | **0.5471** | 36.6s |
-| LightGBM | 0.4004 | 0.5114 | 29.1s |
-| Logistic Regression | 0.0115 | 0.0160 | 52.7s |
+| Model | Class weights | Top-1 | Top-5 | Balanced accuracy | F1 (weighted) | Train time |
+|---|---|---|---|---|---|---|
+| Logistic Regression | none | 0.5963 | 0.8891 | 0.5389 | 0.5812 | 9.9s |
+| Logistic Regression | balanced | 0.5306 | 0.8678 | 0.5726 | 0.5505 | 50.4s |
+| XGBoost | none | 0.5812 | 0.9175 | 0.4787 | 0.5505 | 50.5s |
+| **XGBoost** | **balanced** | **0.5022** | **0.9068** | **0.5689** | **0.5157** | **65.8s** |
+| LightGBM | none | 0.5546 | 0.8776 | 0.3874 | 0.5138 | 28.2s |
 
-XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperparameter style. Logistic regression is not competitive on this task — the 80-class problem with sparse TF-IDF features and domain indicators benefits from tree-based feature interactions that linear models cannot capture. Reproduce with `uv run python scripts/compare_models.py`.
+On this synthetic data a scaled logistic regression is a close competitor to XGBoost: it leads on top-1 and weighted F1 and is the fastest to train without weights, while XGBoost leads on top-5 at either weighting. With balanced weights on both, their balanced accuracy is within half a point. The generator ties an entry's wording closely to its account code, a setting where linear models on TF-IDF features do well; neither model has been hyperparameter-searched for this comparison. Reproduce with `uv run python scripts/compare_models.py` — committed run: [`reports/model_comparison.json`](reports/model_comparison.json).
 
 ![Top-K Accuracy](reports/topk_accuracy.png)
 

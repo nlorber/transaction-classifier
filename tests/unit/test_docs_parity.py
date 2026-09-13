@@ -88,3 +88,23 @@ def test_class_weighting_table_matches_report():
     ]
     missing = [row for row in expected if row not in design]
     assert missing == []
+
+
+def test_model_comparison_table_matches_report():
+    readme = _doc("README.md")
+    columns = ("top1_accuracy", "top5_accuracy", "balanced_accuracy", "f1_weighted")
+    expected = [
+        "| "
+        + " | ".join(
+            [
+                row["model"],
+                row["class_weights"],
+                *(f"{row[c]:.4f}" for c in columns),
+                f"{row['train_seconds']}s",
+            ]
+        )
+        + " |"
+        for row in _report("model_comparison.json")
+    ]
+    missing = [row for row in expected if row not in readme]
+    assert missing == []
