@@ -246,28 +246,29 @@ This system is designed for a single accounting entity's transaction history. Th
 
 `training/validator.py :: QualityGate` implements a post-training quality gate that decides whether a newly trained model is promoted to `current`.
 
-### Baseline-Relative Lift
+### Floors, not targets
 
-Rather than fixed thresholds, the quality gate adapts to each dataset:
+The gate never asks a retrain to *improve* on production — a monthly retrain on similar data scores about the same, and a lift requirement against the live model would block every promotion after the first. It asks two things instead:
 
 ```python
-class QualityGate:
-    def __init__(self, min_lift: float = 0.20):
-        ...
-
-    def check(self, manifest, baseline_accuracy, n_classes):
-        acc_threshold = baseline_accuracy * (1 + self.min_lift)
-        bal_threshold = (1.0 / n_classes) * (1 + self.min_lift)
+# training/validator.py :: QualityGate.check
+acc_floor = baseline_accuracy * (1 + self.min_lift)          # majority-class frequency
+if live_acc is not None:
+    acc_floor = max(acc_floor, live_acc - self.max_accuracy_drop)
+bal_floor = (1.0 / n_classes) * (1 + self.min_lift)          # chance on the macro view
 ```
 
-The gate requires the model to beat the majority-class baseline by at least 20% (configurable via `TXCLS_MIN_LIFT`). This adapts automatically to dataset difficulty and class count --- a 10-class dataset has a different random-chance baseline than a 200-class one.
+1. **Beat trivial baselines.** Accuracy must exceed the majority-class frequency, and balanced accuracy must exceed chance, both by `TXCLS_MIN_LIFT` (default 20%). This adapts to dataset difficulty and class count --- a 10-class dataset has a different chance level than a 200-class one. The balanced-accuracy floor is what stops a majority-class predictor from passing on accuracy alone.
+2. **Don't regress (non-inferiority).** When a model is already promoted, accuracy may not fall more than `TXCLS_MAX_ACCURACY_DROP` (default 0.01) below the live model's recorded accuracy. An equal-quality retrain is promoted; a clearly worse one is not.
+
+The live accuracy comes from the promoted model's manifest, measured on *its* evaluation window rather than the candidate's. The tolerance absorbs that window-to-window noise; re-scoring the live bundle on the candidate's test set is the upgrade if the noise ever exceeds it.
 
 ### Failure behavior
 
 ```mermaid
 flowchart TD
-    A[TrainingPipeline.run completes] --> B{QualityGate.validate}
-    B -->|pass| C[QualityGate.promote → set_current]
+    A[TrainingPipeline.execute completes] --> B{QualityGate.check}
+    B -->|pass| C[QualityGate.approve_and_promote → ModelStore.promote]
     C --> D[Serving picks up new model via watchdog]
     B -->|fail| E[Model saved to v-YYYYMMDD-HHMMSS/]
     E --> F["current symlink unchanged\nprevious model continues serving"]

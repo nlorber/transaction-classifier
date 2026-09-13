@@ -16,39 +16,40 @@ class GateResult:
     passed: bool
     accuracy: float
     balanced_accuracy: float
-    baseline_accuracy: float
-    min_lift: float
+    accuracy_floor: float
+    balanced_accuracy_floor: float
+    live_accuracy: float | None
 
 
 class QualityGate:
-    """Decides whether a trained model exceeds a baseline by a minimum margin.
+    """Decides whether a trained model may replace the live one.
 
-    Rather than using fixed thresholds, the gate requires:
-    1. accuracy > baseline_accuracy * (1 + min_lift)
-    2. balanced_accuracy > 1/n_classes * (1 + min_lift)
+    A candidate must clear two independent floors:
 
-    This adapts automatically to dataset difficulty and class count.
+    1. ``accuracy >= max(majority * (1 + min_lift), live - max_accuracy_drop)``
+       -- it beats the majority-class baseline by a margin, and it is no worse
+       than the promoted model beyond a small tolerance (non-inferiority).
+       Without a promoted model only the majority term applies.
+    2. ``balanced_accuracy >= 1/n_classes * (1 + min_lift)`` -- it beats chance
+       on the macro view, so a majority-class predictor cannot pass on (1).
     """
 
-    def __init__(self, min_lift: float = 0.20):
+    def __init__(self, min_lift: float = 0.20, max_accuracy_drop: float = 0.01):
         self.min_lift = min_lift
+        self.max_accuracy_drop = max_accuracy_drop
 
-    def _live_baseline(self, store: ModelStore, fallback: float) -> float:
-        """Return the promoted model's accuracy, or *fallback* if none exists."""
+    def _live_accuracy(self, store: ModelStore) -> float | None:
+        """Return the promoted model's accuracy, or *None* if it cannot be read."""
         link = store.root / "current"
         if not link.exists():
-            return fallback
+            return None
         try:
             manifest_path = link / "manifest.json"
             live_manifest = Manifest.model_validate_json(manifest_path.read_text())
-            live_acc = float(live_manifest.metrics.get("accuracy", 0.0))
-            logger.info("Using live model accuracy as baseline: %.4f", live_acc)
-            return live_acc
+            return float(live_manifest.metrics["accuracy"])
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not read live manifest, falling back to static baseline: %s", exc
-            )
-            return fallback
+            logger.warning("Could not read live manifest, skipping non-inferiority: %s", exc)
+            return None
 
     def check(
         self,
@@ -57,49 +58,47 @@ class QualityGate:
         n_classes: int,
         store: ModelStore | None = None,
     ) -> GateResult:
-        """Evaluate the manifest's metrics against baseline + lift.
+        """Evaluate the manifest's metrics against the gate floors.
 
-        When *store* is provided the baseline is taken from the live model's
-        accuracy (``models/current/manifest.json``); the static
-        *baseline_accuracy* is used only as a fallback when no promoted model
-        exists yet.
+        *baseline_accuracy* is the majority-class frequency of the training
+        set. When *store* holds a promoted model, its accuracy
+        (``models/current/manifest.json``) adds the non-inferiority floor.
         """
-        if store is not None:
-            baseline_accuracy = self._live_baseline(store, fallback=baseline_accuracy)
+        # ponytail: the live accuracy was measured on its own evaluation window,
+        # not the candidate's; max_accuracy_drop absorbs window-to-window noise.
+        # Re-score the live bundle on the candidate's test set if that noise
+        # ever exceeds the tolerance.
+        live_acc = self._live_accuracy(store) if store is not None else None
 
         acc = manifest.metrics.get("accuracy", 0.0)
         bal = manifest.metrics.get("balanced_accuracy", 0.0)
 
-        acc_threshold = baseline_accuracy * (1 + self.min_lift)
-        bal_threshold = (1.0 / max(n_classes, 1)) * (1 + self.min_lift)
+        acc_floor = baseline_accuracy * (1 + self.min_lift)
+        if live_acc is not None:
+            acc_floor = max(acc_floor, live_acc - self.max_accuracy_drop)
+        bal_floor = (1.0 / max(n_classes, 1)) * (1 + self.min_lift)
 
-        ok = acc >= acc_threshold and bal >= bal_threshold
+        ok = acc >= acc_floor and bal >= bal_floor
 
-        if ok:
-            logger.info(
-                "Model %s passed gate (acc=%.4f >= %.4f, bal=%.4f >= %.4f)",
-                manifest.version,
-                acc,
-                acc_threshold,
-                bal,
-                bal_threshold,
-            )
-        else:
-            logger.warning(
-                "Model %s FAILED gate (acc=%.4f < %.4f or bal=%.4f < %.4f)",
-                manifest.version,
-                acc,
-                acc_threshold,
-                bal,
-                bal_threshold,
-            )
+        log = logger.info if ok else logger.warning
+        log(
+            "Model %s %s gate (acc=%.4f, floor %.4f; bal=%.4f, floor %.4f; live=%s)",
+            manifest.version,
+            "passed" if ok else "FAILED",
+            acc,
+            acc_floor,
+            bal,
+            bal_floor,
+            "none" if live_acc is None else f"{live_acc:.4f}",
+        )
 
         return GateResult(
             passed=ok,
             accuracy=acc,
             balanced_accuracy=bal,
-            baseline_accuracy=baseline_accuracy,
-            min_lift=self.min_lift,
+            accuracy_floor=acc_floor,
+            balanced_accuracy_floor=bal_floor,
+            live_accuracy=live_acc,
         )
 
     def approve_and_promote(self, vault: ModelStore, manifest: Manifest) -> None:

@@ -79,7 +79,9 @@ def train(
         sys.exit(1)
 
     if auto_promote:
-        gate = QualityGate(min_lift=settings.min_lift)
+        gate = QualityGate(
+            min_lift=settings.min_lift, max_accuracy_drop=settings.max_accuracy_drop
+        )
         store = ModelStore(settings.artifact_dir)
         result = gate.check(
             manifest, baseline_accuracy=baseline_accuracy, n_classes=n_classes, store=store

@@ -91,9 +91,11 @@ beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 
 
 ## Caveats, Maintenance & Drift
 
-- **Quality gate:** promotion is blocked by floor thresholds (not targets) so a
-  catastrophically bad retrain (e.g. cold-start on sparse data) never replaces a good model;
-  on failure the previous `current` symlink stays in place.
+- **Quality gate:** promotion is blocked by floor thresholds (not targets): a retrain must beat
+  the majority-class baseline and chance by `min_lift`, and may not lose more than
+  `max_accuracy_drop` (default 0.01) accuracy against the promoted model. An equal-quality
+  retrain is promoted; a regression (e.g. cold-start on sparse data) is not, and the previous
+  `current` symlink stays in place.
 - **Drift monitoring:** `POST /ops/drift` scores a batch by Population Stability Index against
   reference distributions frozen in the manifest at training time — six input features
   (`amount`, `desc_len`, `is_debit`, `has_reference`, `amount_bucket`, `weekday`) plus the

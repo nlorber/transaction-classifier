@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # --- Quality gate ------------------------------------------------------
     min_lift: float = 0.20
+    max_accuracy_drop: float = 0.01
 
     # --- Feature profile ----------------------------------------------------
     feature_profile: str = "config/profiles/french_treasury.yaml"
