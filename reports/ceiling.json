@@ -1,0 +1,8 @@
+{
+  "evaluated_on": "held-out temporal test block",
+  "rows": 1127,
+  "bayes_top1_accuracy": 0.6779,
+  "bayes_top3_accuracy": 0.8771,
+  "bayes_top5_accuracy": 0.9485,
+  "expected_bayes_top1_accuracy": 0.6773
+}

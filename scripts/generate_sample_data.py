@@ -801,11 +801,18 @@ def fill_template(template: str, entity: str, tx_date: date) -> str:
     return result
 
 
+# Share of amounts drawn as a round multiple, and the multiples used.
+ROUND_AMOUNT_RATE = 0.2
+ROUND_MAGNITUDES = [10, 50, 100, 500, 1000]
+# Share of rows that carry remarks (matching real-world distribution).
+REMARKS_RATE = 0.30
+
+
 def generate_amount(low: float, high: float) -> float:
-    """Generate a transaction amount with 20% round-amount bias."""
-    if random.random() < 0.2:
+    """Generate a transaction amount with a round-amount bias."""
+    if random.random() < ROUND_AMOUNT_RATE:
         # Round amount
-        magnitude = random.choice([10, 50, 100, 500, 1000])
+        magnitude = random.choice(ROUND_MAGNITUDES)
         amount = magnitude * random.randint(1, max(1, int(high / magnitude)))
         return float(max(low, min(high, amount)))
     else:
@@ -820,8 +827,8 @@ def format_comment_html(comment: str) -> str:
     return comment
 
 
-def pick_entity(account_code: str) -> str:
-    """Pick a contextually appropriate entity name for an account code."""
+def entity_pool(account_code: str) -> list[str]:
+    """Counterparty names a row of this account code can carry."""
     prefix = account_code[:3]
     if prefix in (
         "411",
@@ -837,15 +844,20 @@ def pick_entity(account_code: str) -> str:
         "758",
         "771",
     ):
-        return random.choice(CLIENT_ENTITIES)
+        return CLIENT_ENTITIES
     elif prefix in ("627",):
-        return random.choice(SERVICE_ENTITIES[:8])  # Telecom/utilities
+        return SERVICE_ENTITIES[:8]  # Telecom/utilities
     elif prefix in ("616",):
-        return random.choice(SERVICE_ENTITIES[8:12])  # Insurance
+        return SERVICE_ENTITIES[8:12]  # Insurance
     elif prefix in ("601", "606", "604", "618", "623", "624", "625", "628"):
-        return random.choice(SUPPLIER_ENTITIES + SERVICE_ENTITIES)
+        return SUPPLIER_ENTITIES + SERVICE_ENTITIES
     else:
-        return random.choice(SUPPLIER_ENTITIES)
+        return SUPPLIER_ENTITIES
+
+
+def pick_entity(account_code: str) -> str:
+    """Pick a contextually appropriate entity name for an account code."""
+    return random.choice(entity_pool(account_code))
 
 
 # ---------------------------------------------------------------------------
@@ -879,8 +891,7 @@ def main() -> None:
 
             description = fill_template(description_pattern, entity, tx_date)
 
-            # ~30% of rows have remarks (matching real-world distribution)
-            if remarks_pattern is not None and random.random() < 0.30:
+            if remarks_pattern is not None and random.random() < REMARKS_RATE:
                 remarks_raw = fill_template(remarks_pattern, entity, tx_date)
                 remarks = format_comment_html(remarks_raw)
             else:

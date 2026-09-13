@@ -21,6 +21,9 @@ Trained on **synthetic data** (7,508 transactions, 80 account classes). On real 
 | Balanced accuracy | 49.3% |
 | Classes | 80 |
 | Evaluation samples | 1,502 |
+| Bayes ceiling, top-1 / top-5 | 67.8% / 94.9% |
+
+The ceiling row is the Bayes-optimal classifier under the generator's own sampling process, scored on the same test rows: no model can beat it in expectation, so it is the yardstick for every synthetic number above ([`scripts/estimate_ceiling.py`](scripts/estimate_ceiling.py) — committed run: [`reports/ceiling.json`](reports/ceiling.json)).
 
 See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and the accuracy-vs-balanced-accuracy gap matter more.
 
@@ -212,6 +215,8 @@ src/transaction_classifier/
   evaluation/            — visualization generation (confusion matrix, charts)
 scripts/
   generate_sample_data.py — synthetic dataset generator
+  estimate_ceiling.py     — Bayes-optimal accuracy ceiling of the synthetic data
+  eval_class_weights.py   — measured effect of balanced class weights
   deploy_model.sh         — deployment helper
   retrain.sh              — retraining automation
 docker/
