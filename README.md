@@ -160,7 +160,7 @@ uv run tc-train --auto-promote -v
 TXCLS_SANDBOX_MODE=true uv run tc-serve
 
 # With a trained model (requires models/current symlink
-# created by --auto-promote, or manually via: ln -sf models/v-YYYYMMDD-HHMMSS models/current).
+# created by --auto-promote, or manually via: ./scripts/deploy_model.sh v-YYYYMMDD-HHMMSS).
 # Auth fails closed: configure TXCLS_API_KEYS, or opt out explicitly for local use:
 # TXCLS_AUTH_DISABLED=true uv run tc-serve
 
