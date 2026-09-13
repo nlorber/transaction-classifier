@@ -199,3 +199,28 @@ def test_collect_feature_names_matches_matrix_columns(sample_df, domain_engine):
     # Spot check: dense feature names present
     assert "amount" in names
     assert "weekday" in names
+
+
+def test_every_structured_field_varies_on_sample_data(domain_engine):
+    """A profile field the sample data never exercises is a dead, constant column."""
+    import yaml
+
+    from transaction_classifier.core.data.loader import read_csv_data
+
+    df = read_csv_data("data/sample.csv", target_length=6)
+    df["amount"] = df["debit"].fillna(0).astype(float) + df["credit"].fillna(0).astype(float)
+    features = domain_engine.build(
+        df,
+        text_cols=["remarks", "description"],
+        amount_col="amount",
+        date_col="posting_date",
+        comment_col="remarks",
+    )
+
+    with open("config/profiles/french_treasury.yaml", encoding="utf-8") as fh:
+        structured = yaml.safe_load(fh)["structured_fields"]
+    checked = [f"has_{name}" for name in structured["field_patterns"]]
+    checked += list(structured["derived_features"])
+    assert {"has_ibe", "has_bic", "has_rcn", "has_lcc", "has_lc2", "has_pdo"} <= set(checked)
+    constant = [c for c in checked if features[c].nunique() < 2]
+    assert constant == []

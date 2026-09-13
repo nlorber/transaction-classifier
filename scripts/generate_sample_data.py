@@ -9,6 +9,7 @@ Usage:
 """
 
 import csv
+import hashlib
 import random
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,6 +24,16 @@ OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "sample.csv"
 N_ROWS = 7500
 DATE_START = date(2024, 1, 1)
 DATE_END = date(2025, 12, 31)
+
+# Counterparty banks by country: BIC characters 5-6 carry the country code, and
+# the int is the BBAN length that follows the IBAN's 4-character prefix.
+BANKS_BY_COUNTRY: dict[str, tuple[list[str], int]] = {
+    "FR": (["BNPAFRPP", "SOGEFRPP", "CRLYFRPP", "AGRIFRPP", "CCBPFRPP"], 23),
+    "BE": (["GEBABEBB"], 12),
+    "DE": (["DEUTDEFF"], 18),
+}
+# Mostly domestic counterparties, with a few foreign ones so is_domestic_iban varies.
+COUNTRY_MIX = ["FR"] * 8 + ["BE", "DE"]
 
 # ---------------------------------------------------------------------------
 # French PCG accounting codes with target counts (power-law distribution)
@@ -211,7 +222,7 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
         ),
         (
             "VIR SEPA {entity}",
-            "VIR SEPA REF:{ref8} NPY:{entity} LIB:COMMANDE FOURNITURES",
+            "VIR SEPA REF:{ref8} NPY:{entity} LIB:COMMANDE FOURNITURES LCC:BON COMMANDE {ref6}",
             True,
             (200, 25000),
         ),
@@ -225,7 +236,7 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
     "401100": [
         (
             "VIR SEPA {entity}",
-            "VIR SEPA REF:{ref8} NPY:{entity} LIB:FACTURE FOURNISSEUR {inv}",
+            "VIR SEPA REF:{ref8} NPY:{entity} LIB:FACTURE FOURNISSEUR {inv} LC2:ECHEANCE {month}",
             True,
             (150, 12000),
         ),
@@ -262,7 +273,8 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
     "411000": [
         (
             "VIR RECU {entity}",
-            "VIR SEPA NPY:{entity} LIB:REGLEMENT FACTURE {inv}",
+            "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} "
+            "RCN:{inv} LIB:REGLEMENT FACTURE {inv}",
             False,
             (500, 50000),
         ),
@@ -272,7 +284,7 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
     "411100": [
         (
             "VIR RECU {entity}",
-            "VIR SEPA NPY:{entity} LIB:REGLEMENT CLIENT {inv}",
+            "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} LIB:REGLEMENT CLIENT {inv}",
             False,
             (200, 30000),
         ),
@@ -755,10 +767,30 @@ def random_date() -> date:
         return DATE_START + timedelta(days=offset)
 
 
+def counterparty_bank(entity: str) -> tuple[str, str, str]:
+    """Return a stable (IBAN, BIC, country) for a counterparty name.
+
+    Derived from a hash of the name rather than the seeded RNG: a counterparty
+    keeps one account across rows, and filling these placeholders never shifts
+    the random stream that every other generated value depends on.
+    """
+    digest = int(hashlib.sha256(entity.encode()).hexdigest(), 16)
+    country = COUNTRY_MIX[digest % len(COUNTRY_MIX)]
+    bics, bban_length = BANKS_BY_COUNTRY[country]
+    bic = bics[(digest // len(COUNTRY_MIX)) % len(bics)]
+    check_digits = 10 + digest % 90
+    bban = digest % 10**bban_length
+    return f"{country}{check_digits}{bban:0{bban_length}d}", bic, country
+
+
 def fill_template(template: str, entity: str, tx_date: date) -> str:
     """Replace placeholders in a template string."""
+    iban, bic, country = counterparty_bank(entity)
     result = template
     result = result.replace("{entity}", entity)
+    result = result.replace("{iban}", iban)
+    result = result.replace("{bic}", bic)
+    result = result.replace("{country}", country)
     result = result.replace("{ref8}", f"FR{random.randint(10000000, 99999999)}")
     result = result.replace("{ref6}", str(random.randint(100000, 999999)))
     result = result.replace("{inv}", f"FAC{random.randint(2024000, 2025999)}")
