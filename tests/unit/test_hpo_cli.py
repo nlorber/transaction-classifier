@@ -208,7 +208,11 @@ class TestLoadAndPrepareData:
         """Verify CSV mode works end-to-end."""
         from transaction_classifier.core.config import Settings
 
-        settings = Settings(data_path=str(sample_csv_path), min_class_samples=1)
+        # 50/20/30 keeps a training class in the 10-row fixture's val block and
+        # enough training rows for TF-IDF's min_df=3.
+        settings = Settings(
+            data_path=str(sample_csv_path), min_class_samples=1, train_ratio=0.5, val_ratio=0.2
+        )
         X_train, y_train, X_val, y_val, n_classes = load_and_prepare_data(settings)
         assert X_train.shape[0] > 0
         assert len(y_train) == X_train.shape[0]

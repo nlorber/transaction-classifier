@@ -41,7 +41,11 @@ def load_and_prepare_data(
     )
     logger.info("Loaded %d rows, %d classes", len(df), df["target"].nunique())
 
-    train_df, val_df = split_by_date(df, train_ratio=0.85)
+    # Same boundaries as training. The test block is discarded here: tuning
+    # against it would leak into the metrics training later reports on it.
+    train_df, val_df, _ = split_by_date(
+        df, train_ratio=settings.train_ratio, val_ratio=settings.val_ratio
+    )
     logger.info("Split: train=%d, val=%d", len(train_df), len(val_df))
 
     le = LabelEncoder()

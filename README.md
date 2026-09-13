@@ -26,7 +26,7 @@ See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations,
 
 ### Feature Ablation
 
-Cumulative accuracy on the temporal validation split. Each row adds one feature family. Same XGBoost hyperparameters throughout.
+Cumulative accuracy on the held-out temporal test block. Each row adds one feature family. Same XGBoost hyperparameters throughout.
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
@@ -53,7 +53,7 @@ XGBoost outperforms LightGBM by ~8pp on balanced accuracy with the same hyperpar
 
 ## Why This Design
 
-- **Temporal train/val split** — no random shuffle. _In production, you predict future transactions from past patterns; random splits leak future information and inflate metrics._
+- **Temporal train/val/test split (70/15/15)** — no random shuffle; early stopping and tuning read only the validation block, and reported metrics only the later test block. _In production, you predict future transactions from past patterns; random splits leak future information, and grading on the window that picked the stopping round flatters the result._
 - **Atomic symlink promotion** — new model artifacts land in a versioned directory; a symlink swap makes them live. _Prevents serving half-written model files during deployment._
 - **Quality gate before promotion** — floor thresholds (not targets) block catastrophically bad models. _Catches cold-start scenarios where sparse training data produces a model worse than the previous version._
 - **Hot-reload with in-flight completion** — filesystem events (watchdog) with debounce + old predictor stays alive until current requests finish. _Zero-downtime model updates without a load balancer or blue-green deployment._
@@ -415,7 +415,7 @@ Notes:
   classes, it counts from 800 rows up). The 300-row example above is in that regime.
 - The two reference distributions rest on different splits, so both sizes are returned next to
   `n_samples` for callers to judge against: `reference_size` (training rows) backs `input_drift`,
-  `output_reference_size` (held-out validation rows) backs `output_drift`.
+  `output_reference_size` (held-out test rows) backs `output_drift`.
 - `posting_date` is optional, and rows without one are excluded from the `weekday` score rather
   than counted at an imputed weekday. If no row in the batch carries a parseable date, `weekday`
   is omitted from `input_drift` entirely — treat its keys as a subset of the six above.

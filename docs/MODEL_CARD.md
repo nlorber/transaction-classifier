@@ -45,8 +45,8 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 
 ## Metrics
 
-Evaluated on the temporal validation split (the most recent transactions, `train_ratio` 0.80;
-n = **1,502** evaluation samples).
+Evaluated on the held-out temporal test block (the most recent 15% of transactions, which neither
+early stopping nor tuning ever sees; n = **1,502** evaluation samples).
 
 | Metric | Value |
 |---|---|
@@ -68,9 +68,12 @@ beats LightGBM (0.405 / 0.515); logistic regression is not competitive (0.012 / 
 
 - **Source:** **synthetic** data — 7,508 transactions across 80 account classes, produced by
   `scripts/generate_sample_data.py`. No proprietary or personal data is used or distributed.
-- **Split:** temporal (chronological), **not** randomly shuffled — the earliest 80% train,
-  the most recent 20% validate. This mirrors production (predict future transactions from past
-  patterns) and avoids the future-information leakage a random split would introduce.
+- **Split:** temporal (chronological), **not** randomly shuffled — the earliest 70% train, the
+  next 15% validate (early stopping, hyperparameter search), and the most recent 15% are a
+  held-out test block read only for the reported metrics and the quality gate. This mirrors
+  production (predict future transactions from past patterns), avoids the future-information
+  leakage a random split would introduce, and keeps the stopping round from being chosen on the
+  same rows that grade it.
 - **Known synthetic-vs-real gap:** the generator uses uniform entity distribution and random
   label templates, which removes the client-specific seasonal and entity patterns that the
   domain/date features were designed to exploit. On the synthetic set those feature families

@@ -1,8 +1,9 @@
 """Evaluate the current model and regenerate report artifacts.
 
-Loads the promoted model, runs predictions on the temporal validation split,
-and generates confusion matrix, top-K accuracy curve, calibration diagram,
-and per-class performance charts.
+Loads the promoted model, runs predictions on the held-out temporal test block
+(the split boundaries and class filter come from ``Settings``, so they match
+training), and generates confusion matrix, top-K accuracy curve, calibration
+diagram, and per-class performance charts.
 
 Usage:
     uv run python scripts/evaluate_model.py
@@ -26,7 +27,6 @@ logger = logging.getLogger(__name__)
 @click.option("--data-path", default="data/sample.csv", help="Path to CSV data")
 @click.option("--model-dir", default="models", help="Path to model store")
 @click.option("--output-dir", default="reports", help="Output directory for reports")
-@click.option("--train-ratio", default=0.80, type=float, help="Temporal split ratio")
 @click.option(
     "--shap", "run_shap", is_flag=True, help="Generate SHAP summary (requires explain extra)"
 )
@@ -35,7 +35,6 @@ def evaluate(
     data_path: str,
     model_dir: str,
     output_dir: str,
-    train_ratio: float,
     run_shap: bool,
     shap_samples: int,
 ) -> None:
@@ -43,6 +42,7 @@ def evaluate(
     import numpy as np
 
     from transaction_classifier.core.artifacts.store import ModelStore
+    from transaction_classifier.core.config import Settings
     from transaction_classifier.core.data.loader import read_csv_data
     from transaction_classifier.core.data.splitter import split_by_date
     from transaction_classifier.core.features.engine import DomainFeatureEngine
@@ -52,25 +52,32 @@ def evaluate(
     )
     from transaction_classifier.evaluation.visualize import generate_all_reports
 
+    settings = Settings()
+
     logger.info("Loading model from %s", model_dir)
     store = ModelStore(model_dir)
     bundle = store.load_active()
 
     logger.info("Loading data from %s", data_path)
-    df = read_csv_data(data_path, target_length=6, min_class_samples=1)
+    df = read_csv_data(
+        data_path,
+        target_length=settings.target_length,
+        min_class_samples=settings.min_class_samples,
+    )
 
-    _, val_df = split_by_date(df, train_ratio=train_ratio)
-    logger.info("Validation set: %d rows", len(val_df))
+    _, _, test_df = split_by_date(
+        df, train_ratio=settings.train_ratio, val_ratio=settings.val_ratio
+    )
+    logger.info("Test block: %d rows", len(test_df))
 
     le = bundle.label_encoder
-    val_mask = val_df["target"].isin(le.classes_)
-    val_df = val_df[val_mask].copy()
-    y_true = le.transform(val_df["target"])
+    test_df = test_df[test_df["target"].isin(le.classes_)].copy()
+    y_true = le.transform(test_df["target"])
 
-    engine = DomainFeatureEngine("config/profiles/french_treasury.yaml")
-    X_val = assemble_feature_matrix(val_df, bundle.text_extractor, engine, fit=False)
+    engine = DomainFeatureEngine(settings.feature_profile)
+    X_test = assemble_feature_matrix(test_df, bundle.text_extractor, engine, fit=False)
 
-    proba = bundle.model.predict_proba(X_val)
+    proba = bundle.model.predict_proba(X_test)
     y_pred = proba.argmax(axis=1)
 
     # Prepare SHAP inputs if requested
@@ -79,11 +86,11 @@ def evaluate(
     feature_names_for_shap = None
     if run_shap:
         logger.info("Preparing SHAP data (%d samples) ...", shap_samples)
-        feature_names_for_shap = collect_feature_names(val_df, bundle.text_extractor, engine)
+        feature_names_for_shap = collect_feature_names(test_df, bundle.text_extractor, engine)
         rng = np.random.default_rng(42)
-        n_val = X_val.shape[0]
-        idx = rng.choice(n_val, size=min(shap_samples, n_val), replace=False)
-        X_dense_for_shap = X_val.tocsr()[idx].toarray()
+        n_test = X_test.shape[0]
+        idx = rng.choice(n_test, size=min(shap_samples, n_test), replace=False)
+        X_dense_for_shap = X_test.tocsr()[idx].toarray()
         model_for_shap = bundle.model
 
     class_names = list(le.classes_)

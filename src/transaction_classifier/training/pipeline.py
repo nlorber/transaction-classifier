@@ -24,9 +24,16 @@ from ..core.utils.reproducibility import get_reproducibility_info, set_seed
 
 logger = logging.getLogger(__name__)
 
+Labels = np.ndarray[Any, np.dtype[Any]]
+
 
 class TrainingPipeline:
-    """Coordinates data loading, feature creation, training, evaluation, and storage."""
+    """Coordinates data loading, feature creation, training, evaluation, and storage.
+
+    Three chronological blocks keep evaluation honest: the model fits on
+    *train* and early-stops on *val*, and every reported metric (and therefore
+    the quality gate) comes from *test*, which no fitting decision has seen.
+    """
 
     def __init__(self, settings: Settings, provider: DataSource):
         self.settings = settings
@@ -40,12 +47,16 @@ class TrainingPipeline:
         set_seed(cfg.random_state)
 
         df = self._ingest()
-        train_df, val_df, stats = self._split(df)
-        le, y_train, y_val, val_known, baseline = self._encode_labels(train_df, val_df)
-        extractor, engine, X_train, X_val = self._build_features(cfg, train_df, val_known)
+        train_df, val_df, test_df, stats = self._split(df)
+        le, y_train, baseline = self._encode_train_labels(train_df)
+        val_known, y_val = self._known_classes(le, val_df, "val")
+        test_known, y_test = self._known_classes(le, test_df, "test")
+        extractor, _, X_train, X_val, X_test = self._build_features(
+            cfg, train_df, val_known, test_known
+        )
         model, train_secs = self._train(cfg, X_train, y_train, X_val, y_val)
-        metrics = self._evaluate(model, X_val, y_val)
-        drift_baseline = self._drift_baseline(train_df, model, X_val, le)
+        metrics = self._evaluate(model, X_test, y_test)
+        drift_baseline = self._drift_baseline(train_df, model, X_test, le)
         manifest = self._persist(
             model,
             extractor,
@@ -53,6 +64,7 @@ class TrainingPipeline:
             metrics,
             stats,
             len(val_known),
+            len(test_known),
             X_train,
             train_secs,
             drift_baseline,
@@ -79,47 +91,50 @@ class TrainingPipeline:
         )
         return df
 
-    def _split(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    def _split(
+        self, df: pd.DataFrame
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
         cfg = self.settings
-        logger.info("Splitting (temporal, ratio=%.2f) …", cfg.train_ratio)
-        train_df, val_df = split_by_date(df, train_ratio=cfg.train_ratio)
-        stats = temporal_partition_stats(train_df, val_df)
+        logger.info("Splitting (temporal, train=%.2f, val=%.2f) …", cfg.train_ratio, cfg.val_ratio)
+        train_df, val_df, test_df = split_by_date(
+            df, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio
+        )
+        stats = temporal_partition_stats(train_df, val_df, test_df)
         logger.info(
-            "Train: %d | Val: %d | Classes: %d",
+            "Train: %d | Val: %d | Test: %d | Classes: %d",
             stats["train_rows"],
             stats["val_rows"],
+            stats["test_rows"],
             stats["train_n_classes"],
         )
-        return train_df, val_df, stats
+        return train_df, val_df, test_df, stats
 
-    def _encode_labels(
-        self, train_df: pd.DataFrame, val_df: pd.DataFrame
-    ) -> tuple[
-        LabelEncoder,
-        np.ndarray[Any, np.dtype[Any]],
-        np.ndarray[Any, np.dtype[Any]],
-        pd.DataFrame,
-        float,
-    ]:
+    def _encode_train_labels(self, train_df: pd.DataFrame) -> tuple[LabelEncoder, Labels, float]:
         le = LabelEncoder()
-        y_train: np.ndarray[Any, np.dtype[Any]] = le.fit_transform(train_df["target"])
+        y_train: Labels = le.fit_transform(train_df["target"])
         baseline = float(pd.Series(y_train).value_counts(normalize=True).iloc[0])
-        known_mask = val_df["target"].isin(le.classes_)
-        val_known = val_df[known_mask]
-        y_val: np.ndarray[Any, np.dtype[Any]] = le.transform(val_known["target"])
-        if len(val_known) < len(val_df):
-            logger.warning(
-                "Excluded %d val rows with unseen classes",
-                len(val_df) - len(val_known),
-            )
-        return le, y_train, y_val, val_known, baseline
+        return le, y_train, baseline
+
+    @staticmethod
+    def _known_classes(
+        le: LabelEncoder, df: pd.DataFrame, name: str
+    ) -> tuple[pd.DataFrame, Labels]:
+        """Keep the rows whose class was seen in training; the model cannot score others."""
+        known = df[df["target"].isin(le.classes_)]
+        if len(known) < len(df):
+            logger.warning("Excluded %d %s rows with unseen classes", len(df) - len(known), name)
+        if known.empty:
+            raise ValueError(f"The {name} block has no rows with a class seen in training")
+        y: Labels = le.transform(known["target"])
+        return known, y
 
     def _build_features(
         self,
         cfg: Settings,
         train_df: pd.DataFrame,
         val_df: pd.DataFrame,
-    ) -> tuple[TfidfFeatureExtractor, DomainFeatureEngine, spmatrix, spmatrix]:
+        test_df: pd.DataFrame,
+    ) -> tuple[TfidfFeatureExtractor, DomainFeatureEngine, spmatrix, spmatrix, spmatrix]:
         logger.info("Building features …")
         t0 = time.time()
         extractor = TfidfFeatureExtractor(
@@ -130,16 +145,17 @@ class TrainingPipeline:
         engine = DomainFeatureEngine(cfg.feature_profile)
         X_train = assemble_feature_matrix(train_df, extractor, engine, fit=True)  # noqa: N806
         X_val = assemble_feature_matrix(val_df, extractor, engine, fit=False)  # noqa: N806
+        X_test = assemble_feature_matrix(test_df, extractor, engine, fit=False)  # noqa: N806
         logger.info("Feature shape: %s (%.1fs)", X_train.shape, time.time() - t0)
-        return extractor, engine, X_train, X_val
+        return extractor, engine, X_train, X_val, X_test
 
     def _train(
         self,
         cfg: Settings,
         X_train: spmatrix,  # noqa: N803
-        y_train: np.ndarray[Any, np.dtype[Any]],
+        y_train: Labels,
         X_val: spmatrix,  # noqa: N803
-        y_val: np.ndarray[Any, np.dtype[Any]],
+        y_val: Labels,
     ) -> tuple[XGBoostModel, float]:
         logger.info(
             "Training XGBoostModel (%d rounds, depth=%d) …",
@@ -166,14 +182,14 @@ class TrainingPipeline:
     def _evaluate(
         self,
         model: XGBoostModel,
-        X_val: spmatrix,  # noqa: N803
-        y_val: np.ndarray[Any, np.dtype[Any]],
+        X_test: spmatrix,  # noqa: N803
+        y_test: Labels,
     ) -> dict[str, Any]:
-        logger.info("Evaluating on validation set …")
-        y_hat = model.predict(X_val)
-        report = evaluate_predictions(y_val, y_hat)
+        logger.info("Evaluating on held-out test block …")
+        y_hat = model.predict(X_test)
+        report = evaluate_predictions(y_test, y_hat)
         logger.info(
-            "Val accuracy=%.4f balanced=%.4f f1_weighted=%.4f",
+            "Test accuracy=%.4f balanced=%.4f f1_weighted=%.4f",
             report.accuracy,
             report.balanced_accuracy,
             report.f1_weighted,
@@ -184,12 +200,12 @@ class TrainingPipeline:
         self,
         train_df: pd.DataFrame,
         model: XGBoostModel,
-        X_val: spmatrix,  # noqa: N803
+        X_test: spmatrix,  # noqa: N803
         le: LabelEncoder,
     ) -> dict[str, Any]:
         """Freeze the reference distributions used by /ops/drift."""
         logger.info("Computing drift baseline …")
-        return build_baseline(train_df, model.predict_proba(X_val), le.classes_)
+        return build_baseline(train_df, model.predict_proba(X_test), le.classes_)
 
     def _persist(
         self,
@@ -199,6 +215,7 @@ class TrainingPipeline:
         metrics: dict[str, Any],
         stats: dict[str, Any],
         val_rows: int,
+        test_rows: int,
         X_train: spmatrix,  # noqa: N803
         train_secs: float,
         drift_baseline: dict[str, Any],
@@ -219,8 +236,10 @@ class TrainingPipeline:
             "tfidf_max_char": cfg.tfidf_max_char,
             "random_state": cfg.random_state,
             "train_ratio": cfg.train_ratio,
+            "val_ratio": cfg.val_ratio,
             "train_rows": stats["train_rows"],
             "val_rows": val_rows,
+            "test_rows": test_rows,
             "num_categories": len(le.classes_),
             "train_seconds": train_secs,
             "env": get_reproducibility_info(),

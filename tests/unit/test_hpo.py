@@ -60,7 +60,11 @@ def test_baseline_params_keys_match_draw_hyperparams():
 
 def test_load_and_prepare_data_uses_temporal_split(sample_csv_path):
     """Verify HPO data loading uses temporal split, not random stratified split."""
-    settings = Settings(data_path=str(sample_csv_path), min_class_samples=1)
+    # 50/20/30 keeps a training class in the 10-row fixture's val block and
+    # enough training rows for TF-IDF's min_df=3.
+    settings = Settings(
+        data_path=str(sample_csv_path), min_class_samples=1, train_ratio=0.5, val_ratio=0.2
+    )
     with patch(
         "transaction_classifier.training.hpo.cli.split_by_date",
         wraps=split_by_date,

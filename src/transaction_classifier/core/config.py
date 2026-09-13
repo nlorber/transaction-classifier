@@ -35,7 +35,12 @@ class Settings(BaseSettings):
     max_bin: int = 256
     device: str = "cpu"
     random_state: int = 42
-    train_ratio: float = 0.80
+
+    # --- Temporal split ----------------------------------------------------
+    # Train, then validation (early stopping, HPO), then the remaining most
+    # recent rows as the held-out test block that metrics and the gate read.
+    train_ratio: float = 0.70
+    val_ratio: float = 0.15
 
     # --- Quality gate ------------------------------------------------------
     min_lift: float = 0.20

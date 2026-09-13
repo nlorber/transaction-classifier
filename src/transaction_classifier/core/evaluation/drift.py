@@ -75,24 +75,25 @@ def psi_verdict(psi: float) -> str:
 
 def build_baseline(
     train_df: pd.DataFrame,
-    val_proba: np.ndarray[Any, np.dtype[Any]],
+    holdout_proba: np.ndarray[Any, np.dtype[Any]],
     classes: np.ndarray[Any, np.dtype[Any]],
     n_bins: int = _N_BINS,
 ) -> dict[str, Any]:
     """Compute the drift reference from the training split.
 
-    ``val_proba`` is ``predict_proba`` on the *held-out validation* set — a model
-    is always over-confident on its own training rows, so validation gives a
-    reference that matches production behaviour.
+    ``holdout_proba`` is ``predict_proba`` on rows the model never trained on
+    (the training pipeline passes its held-out test block) — a model is always
+    over-confident on its own training rows, so held-out rows give a reference
+    that matches production behaviour.
 
-    Output references are the model's own validation predictions, not the true
+    Output references are the model's own held-out predictions, not the true
     label distribution: an imbalanced multi-class model systematically
     under-predicts rare classes, so comparing production predictions against
     ground-truth proportions would measure that bias rather than drift.
 
     The two reference families therefore rest on different row counts, and both
     are recorded: ``reference_size`` is the training rows behind the input
-    references, ``output_reference_size`` the validation rows behind the output
+    references, ``output_reference_size`` the held-out rows behind the output
     ones. Callers judging whether a score is trustworthy need the matching one.
 
     Returns a JSON-serialisable dict for ``Manifest.drift_baseline``.
@@ -116,13 +117,13 @@ def build_baseline(
         }
 
     class_names = [str(c) for c in classes]
-    predicted = np.asarray(class_names)[np.argmax(val_proba, axis=1)]
-    max_confidence = np.max(val_proba, axis=1)
+    predicted = np.asarray(class_names)[np.argmax(holdout_proba, axis=1)]
+    max_confidence = np.max(holdout_proba, axis=1)
 
     return {
         "schema_version": 1,
         "reference_size": int(len(train_df)),
-        "output_reference_size": int(len(val_proba)),
+        "output_reference_size": int(len(holdout_proba)),
         "input_features": input_features,
         "output": {
             "predicted_class_distribution": {

@@ -19,9 +19,14 @@ def domain_engine():
 
 
 def _quick_settings(csv_path: str, tmpdir: str) -> Settings:
+    # The fixture's last rows mostly carry classes the earlier rows never show.
+    # 50/20/30 keeps a training class in both the val and test blocks while
+    # leaving enough training rows for TF-IDF's min_df=3 to keep a vocabulary.
     return Settings(
         data_path=csv_path,
         artifact_dir=tmpdir,
+        train_ratio=0.5,
+        val_ratio=0.2,
         min_class_samples=1,
         n_estimators=10,
         max_depth=2,

@@ -387,12 +387,13 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `train_ratio` | 0.80 | Temporal split -- the earliest 80% of transactions train, the latest 20% validate. This simulates production conditions where the model must predict future transactions from past patterns. A larger validation window provides a more robust accuracy estimate. |
+| `train_ratio` | 0.70 | Temporal split -- the earliest 70% of transactions train. This simulates production conditions where the model must predict future transactions from past patterns. |
+| `val_ratio` | 0.15 | The next 15% validate: early stopping and HPO read this block and nothing later. The most recent 15% is the held-out test block that reported metrics, the quality gate, and the drift output reference read. One window cannot both choose the stopping round and grade the result without flattering it. |
 | `min_class_samples` | 10 | Classes with fewer than 10 samples are dropped during data loading. Below this threshold, the model cannot learn a meaningful pattern and the class would destabilize balanced accuracy. |
 
 ### Feature ablation
 
-Accuracy on the temporal validation split (20% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same XGBoost hyperparameters (500 estimators, depth 6, lr 0.05).
+Accuracy on the held-out temporal test block (15% most recent transactions) with cumulative feature sets. Each row adds one feature family to the previous row. All models use the same XGBoost hyperparameters (500 estimators, depth 6, lr 0.05).
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
