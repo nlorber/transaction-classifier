@@ -31,6 +31,10 @@ _EPSILON = 1e-4
 
 _N_BINS = 10
 
+# Below this many rows per class, most classes draw zero predictions by chance
+# alone and the predicted-class PSI inflates without any real shift.
+_MIN_ROWS_PER_CLASS = 10
+
 # Continuous features need quantile edges computed from the training data.
 _CONTINUOUS_FEATURES: tuple[str, ...] = ("amount", "desc_len")
 
@@ -147,6 +151,11 @@ def evaluate_drift(
     An input feature with no usable rows in *frame* is omitted from
     ``input_drift``, so callers must treat that mapping's keys as a subset of
     the baseline's rather than a fixed set.
+
+    ``overall_verdict`` is the worst score among the entries that can support
+    one. The predicted-class distribution is always reported, but it counts
+    toward the overall verdict only when the batch holds at least
+    ``_MIN_ROWS_PER_CLASS`` rows per class.
     """
     features = _feature_frame(frame)
 
@@ -181,7 +190,10 @@ def evaluate_drift(
         ),
     }
 
-    worst = max(entry["psi"] for entry in (*input_drift.values(), *output_drift.values()))
+    verdict_inputs = [*input_drift.values(), output_drift["confidence_distribution"]]
+    if len(proba) >= _MIN_ROWS_PER_CLASS * len(predicted_spec["categories"]):
+        verdict_inputs.append(output_drift["predicted_class_distribution"])
+    worst = max(entry["psi"] for entry in verdict_inputs)
     return {
         "input_drift": input_drift,
         "output_drift": output_drift,

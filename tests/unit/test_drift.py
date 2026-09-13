@@ -189,3 +189,38 @@ class TestEvaluateDrift:
 
         for entry in report["input_drift"].values():
             assert entry["verdict"] == psi_verdict(entry["psi"])
+
+
+def _every_row_predicts_first_class(proba):
+    """Swap each row's top probability into column 0: same confidences, one class."""
+    forced = proba.copy()
+    rows = np.arange(len(proba))
+    top = proba.argmax(axis=1)
+    forced[rows, 0], forced[rows, top] = proba[rows, top], proba[rows, 0]
+    return forced
+
+
+class TestPredictedClassSampleSize:
+    """The predicted-class PSI only drives the verdict on batches that can support it."""
+
+    def test_small_batch_reports_but_does_not_drive_verdict(self, baseline, sample_df):
+        # 10 rows over 4 classes is below 10 rows per class.
+        proba = _every_row_predicts_first_class(_proba(len(sample_df)))
+
+        report = evaluate_drift(sample_df, proba, CLASSES, baseline)
+
+        assert report["output_drift"]["predicted_class_distribution"]["verdict"] == "significant"
+        assert report["output_drift"]["confidence_distribution"]["psi"] == pytest.approx(
+            0.0, abs=1e-3
+        )
+        assert report["overall_verdict"] == "stable"
+
+    def test_large_enough_batch_drives_verdict(self, baseline, sample_df):
+        # Replaying the reference rows 4x keeps every input proportion identical
+        # while reaching 10 rows per class.
+        batch = pd.concat([sample_df] * 4, ignore_index=True)
+        proba = np.tile(_every_row_predicts_first_class(_proba(len(sample_df))), (4, 1))
+
+        report = evaluate_drift(batch, proba, CLASSES, baseline)
+
+        assert report["overall_verdict"] == "significant"

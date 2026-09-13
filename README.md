@@ -402,7 +402,7 @@ Response:
 ```
 
 Verdicts use the standard PSI thresholds: `< 0.10` stable, `< 0.25` moderate, otherwise
-significant. `overall_verdict` reflects the worst individual score.
+significant. `overall_verdict` reflects the worst individual score, with one exception below.
 
 Notes:
 
@@ -410,8 +410,9 @@ Notes:
   against proportions computed on different bins.
 - Returns `409` if the loaded model carries no baseline; retrain to populate it.
 - `predicted_class_distribution` needs a batch substantially larger than the class count to be
-  meaningful. Below roughly 10 samples per class, most classes draw zero predictions by chance
-  alone and the PSI inflates — read the input features and confidence in that case.
+  meaningful. Below 10 samples per class, most classes draw zero predictions by chance alone and
+  the PSI inflates, so the score is still returned but left out of `overall_verdict` (with 80
+  classes, it counts from 800 rows up). The 300-row example above is in that regime.
 - The two reference distributions rest on different splits, so both sizes are returned next to
   `n_samples` for callers to judge against: `reference_size` (training rows) backs `input_drift`,
   `output_reference_size` (held-out validation rows) backs `output_drift`.
