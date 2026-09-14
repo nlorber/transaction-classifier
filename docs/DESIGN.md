@@ -418,3 +418,19 @@ Accuracy on the held-out temporal test block (15% most recent transactions) with
 | + domain (all features) | 0.5856 | 0.4831 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.
+
+---
+
+## 9. Synthetic Data Generator
+
+`scripts/generate_sample_data.py` draws each row's true account code (a fixed count per code), then a template, a counterparty, a posting date and an amount. It fills the description and, for 30% of rows, the structured remarks, then records the account code. On top of the base templates it models five behaviours of real books. Their parameters, and the effects expected below, were written down before any model was measured on the data they produce:
+
+| Mechanism | Rule | Expected effect |
+|---|---|---|
+| Regular counterparties | Each account uses 3 regular counterparties (chosen by hash) 80% of the time, otherwise anyone in its pool | Counterparty names carry signal; the ceiling rises |
+| Amount-decided accounts | `CB … LIB:ACHAT MATERIEL` is 606300 below €500 and 218000 from €500 (capitalisation threshold); `ECHEANCE EMPRUNT` is 164000 capital (€500–10,000) or 661000 interest (€20–800) | Only the amount separates these pairs |
+| Calendar rules | Social contributions days 5–15; VAT days 17–24 of Jan/Apr/Jul/Oct; corporate tax days 10–20 of Mar/Jun/Sep/Dec; salaries day 25 to month end; rent days 1–5; year-end entries Dec 20–31; other accounts keep the default spread | Date and fiscal-window features gain lift; the "+ date" ablation row turns positive |
+| Bank-label channel (descriptions only) | Payment-type prefix variants (`PRLV SEPA` 60% / `PRELEVEMENT SEPA` 25% / `PRLVT SEPA` 15%, likewise for `VIR SEPA`, `VIR RECU` and `CB`); 5% of labels lose one character; every label is truncated to 32 characters | Word-level TF-IDF loses signal that character n-grams mostly recover; the ceiling falls |
+| Label noise | 3% of the rows of five sibling pairs (606100↔606300, 625100↔625200, 641000↔641100, 401000↔401100, 411000↔411100) are recorded under the sibling | The ceiling falls for those accounts |
+
+No prediction was made about which model benefits. `scripts/estimate_ceiling.py` encodes every rule in its posterior and exits with an error if any test-block row has zero likelihood under its recorded code, so the ceiling cannot drift from the generator unnoticed. `tests/unit/test_sample_generator.py` checks that the sampling distributions are normalised and that the committed sample obeys the calendar rules and the label width.

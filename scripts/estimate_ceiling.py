@@ -1,17 +1,19 @@
 """Bayes-optimal accuracy ceiling for the synthetic sample data.
 
-scripts/generate_sample_data.py draws each row's account code first, then a
-template, a counterparty, a date and an amount. No classifier can beat the
-Bayes rule under that process: predict the code with the highest posterior
-P(code | row). This script evaluates that posterior exactly for every row of
-the held-out test block (same rows, split and class filter as training) and
-scores the Bayes classifier on them, so the result sits directly next to the
-model's own test-block metrics.
+scripts/generate_sample_data.py draws each row's true account code first, then a
+template, a counterparty, a posting date and an amount. It passes the
+description through a bank-label channel (prefix variant, an occasional dropped
+character, truncation) and records the code, occasionally as a sibling account.
+No classifier can beat the Bayes rule under that process: predict the recorded
+code with the highest posterior given the row. This script evaluates that
+posterior exactly for every row of the held-out test block (same rows, split
+and class filter as training) and scores it there, so the result sits directly
+next to the model's own test-block metrics.
 
-Observable per row: description, remarks, amount, debit/credit side and
-posting date. The date, the reference column and the random tokens inside the
-text (bank references, cheque and invoice numbers) are drawn independently of
-the account code, so they carry no signal beyond their format.
+Observable per row: description, remarks, amount, debit/credit side and posting
+date. The reference column and the random tokens inside the remarks (bank
+references, cheque and invoice numbers) are drawn independently of the account
+code, so they carry no signal beyond their format.
 
 Usage:
     uv run python scripts/estimate_ceiling.py
@@ -21,6 +23,7 @@ import importlib.util
 import json
 import logging
 import re
+from collections import defaultdict
 from functools import cache
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -33,13 +36,16 @@ logger = logging.getLogger(__name__)
 GENERATOR_PATH = Path(__file__).resolve().parent / "generate_sample_data.py"
 TOP_K = (1, 3, 5)
 
-# Placeholders filled from the RNG: value regex and the probability of one value.
+# Remarks placeholders filled from the RNG: value regex and the probability of one value.
 RANDOM_TOKENS: dict[str, tuple[str, float]] = {
     "ref8": (r"FR\d{8}", 1 / 90_000_000),
     "ref6": (r"\d{6}", 1 / 900_000),
     "inv": (r"FAC\d{7}", 1 / 2_000),
 }
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+# Observed label -> (counterparty or None, month or None) -> P(label | template, that fill).
+DescriptionTable = dict[str, dict[tuple[str | None, int | None], float]]
 
 
 class Observed(NamedTuple):
@@ -54,11 +60,11 @@ class CompiledTemplate(NamedTuple):
     is_debit: bool
     low: float
     high: float
-    description: re.Pattern[str]
-    description_token_p: float
+    descriptions: DescriptionTable
     remarks: re.Pattern[str] | None
     remarks_token_p: float
-    pool: list[str]
+    counterparty_p: dict[str, float]
+    date_p: dict[Any, float]
     choice_p: float
 
 
@@ -95,6 +101,40 @@ def _token_probability(template: str) -> float:
     return float(np.prod([RANDOM_TOKENS[name][1] for name in names if name in RANDOM_TOKENS]))
 
 
+@cache
+def _description_table(gen: Any, pattern: str, pool: tuple[str, ...]) -> DescriptionTable:
+    """Every bank label a description pattern can produce, with its probability per fill.
+
+    Descriptions only use the counterparty and month placeholders, so each
+    rendering can be enumerated: every prefix variant and fill, kept whole or
+    with one character dropped, then truncated to the bank's label width.
+    """
+    names = set(_PLACEHOLDER.findall(pattern))
+    if not names <= {"entity", "month"}:
+        raise ValueError(f"Cannot enumerate description pattern {pattern!r}")
+    entities: tuple[str | None, ...] = pool if "entity" in names else (None,)
+    months: tuple[int | None, ...] = tuple(range(1, 13)) if "month" in names else (None,)
+    width = gen.BANK_LABEL_LENGTH
+
+    table: defaultdict[str, defaultdict[tuple[str | None, int | None], float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    for rendered, variant_p in gen.label_variants(pattern):
+        for entity in entities:
+            for month in months:
+                text = rendered
+                if entity is not None:
+                    text = text.replace("{entity}", entity)
+                if month is not None:
+                    text = text.replace("{month}", gen.MONTHS_FR[month - 1])
+                fill = (entity, month)
+                table[text[:width]][fill] += variant_p * (1 - gen.TYPO_RATE)
+                dropped_p = variant_p * gen.TYPO_RATE / len(text)
+                for position in range(len(text)):
+                    table[(text[:position] + text[position + 1 :])[:width]][fill] += dropped_p
+    return {label: dict(fills) for label, fills in table.items()}
+
+
 def compile_templates(gen: Any) -> dict[str, list[CompiledTemplate]]:
     entities = {name for code in gen.ACCOUNT_CODES for name in gen.entity_pool(code)}
     token_patterns = {
@@ -111,20 +151,21 @@ def compile_templates(gen: Any) -> dict[str, list[CompiledTemplate]]:
     compiled: dict[str, list[CompiledTemplate]] = {}
     for code in gen.ACCOUNT_CODES:
         variants = gen.TEMPLATES[code]
+        counterparty_p = gen.entity_weights(code)
         compiled[code] = [
             CompiledTemplate(
                 is_debit=is_debit,
                 low=float(low),
                 high=float(high),
-                description=_compile(description, token_patterns),
-                description_token_p=_token_probability(description),
+                descriptions=_description_table(gen, description, tuple(counterparty_p)),
                 remarks=(
                     None
                     if remarks is None
                     else _compile(gen.format_comment_html(remarks), token_patterns)
                 ),
                 remarks_token_p=_token_probability(remarks or ""),
-                pool=gen.entity_pool(code),
+                counterparty_p=counterparty_p,
+                date_p=gen.date_distribution(code),
                 choice_p=1 / len(variants),
             )
             for description, remarks, is_debit, (low, high) in variants
@@ -169,19 +210,16 @@ def _consistent(groups: dict[str, str], row: Observed, gen: Any) -> bool:
 
 
 def likelihood(row: Observed, template: CompiledTemplate, gen: Any) -> float:
-    """P(row | code, template), omitting factors every code shares (date, reference)."""
+    """P(row | true code, template), omitting the reference column every code shares."""
     if row.is_debit != template.is_debit:
         return 0.0
     p = amount_probability(row.amount, template.low, template.high, gen)
-    if p == 0.0:
+    p *= template.date_p.get(row.posting_date.date(), 0.0)
+    fills = template.descriptions.get(row.description)
+    if p == 0.0 or not fills:
         return 0.0
 
-    description = template.description.fullmatch(row.description)
-    if description is None or not _consistent(description.groupdict(), row, gen):
-        return 0.0
-    p *= template.description_token_p
-    entities = {description.groupdict().get("entity")}
-
+    remarks_entity = None
     if not row.remarks:
         p *= 1.0 if template.remarks is None else 1 - gen.REMARKS_RATE
     else:
@@ -189,16 +227,30 @@ def likelihood(row: Observed, template: CompiledTemplate, gen: Any) -> float:
         if remarks is None or not _consistent(remarks.groupdict(), row, gen):
             return 0.0
         p *= gen.REMARKS_RATE * template.remarks_token_p
-        entities.add(remarks.groupdict().get("entity"))
+        remarks_entity = remarks.groupdict().get("entity")
 
-    # Description and remarks are filled with the same drawn counterparty.
-    entities.discard(None)
-    if len(entities) > 1:
-        return 0.0
-    if entities:
-        (entity,) = entities
-        p *= template.pool.count(entity) / len(template.pool)
-    return p * template.choice_p
+    # One drawn counterparty fills both fields, and the description's month is the
+    # posting month. An unobserved counterparty contributes no factor.
+    fill_p = 0.0
+    for (entity, month), description_p in fills.items():
+        if month is not None and month != row.posting_date.month:
+            continue
+        if entity is not None and remarks_entity is not None and entity != remarks_entity:
+            continue
+        drawn = entity if entity is not None else remarks_entity
+        drawn_p = 1.0 if drawn is None else template.counterparty_p.get(drawn, 0.0)
+        fill_p += description_p * drawn_p
+    return p * fill_p * template.choice_p
+
+
+def label_noise_matrix(gen: Any, codes: list[str]) -> np.ndarray:
+    """M[true, recorded]: the chance a row of the true code is recorded under each code."""
+    index = {code: i for i, code in enumerate(codes)}
+    matrix = np.eye(len(codes))
+    for code, sibling in gen.SIBLING_ACCOUNTS.items():
+        matrix[index[code], index[code]] = 1 - gen.LABEL_NOISE_RATE
+        matrix[index[code], index[sibling]] = gen.LABEL_NOISE_RATE
+    return matrix
 
 
 def topk_credit(scores: np.ndarray, true_idx: int, k: int) -> float:
@@ -222,6 +274,7 @@ def main() -> None:
     codes = list(gen.ACCOUNT_CODES)
     total = sum(gen.ACCOUNT_CODES.values())
     prior = np.array([gen.ACCOUNT_CODES[code] / total for code in codes])
+    noise = label_noise_matrix(gen, codes)
     templates = compile_templates(gen)
 
     df = read_csv_data(
@@ -246,9 +299,11 @@ def main() -> None:
             is_debit=record.debit > 0,
             posting_date=record.posting_date,
         )
-        scores = prior * np.array(
+        true_code_scores = prior * np.array(
             [sum(likelihood(row, template, gen) for template in templates[code]) for code in codes]
         )
+        # Score recorded codes: a row of true code c is recorded as l with noise[c, l].
+        scores = true_code_scores @ noise
         true_idx = codes.index(record.target)
         if scores[true_idx] == 0.0:
             unexplained += 1
@@ -257,10 +312,10 @@ def main() -> None:
             topk_hits[k].append(topk_credit(scores, true_idx, k))
         expected_top1.append(float(scores.max() / scores.sum()))
 
-    # Every real row was generated by its true code, so a zero likelihood means this
-    # model of the generator has drifted from scripts/generate_sample_data.py.
+    # Every real row was generated by some code and recorded under this one, so a zero
+    # score means this model of the generator has drifted from generate_sample_data.py.
     if unexplained:
-        raise SystemExit(f"{unexplained} rows have zero likelihood under their true code.")
+        raise SystemExit(f"{unexplained} rows have zero likelihood under their recorded code.")
 
     result: dict[str, object] = {
         "evaluated_on": "held-out temporal test block",

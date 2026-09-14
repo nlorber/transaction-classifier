@@ -12,6 +12,8 @@ import csv
 import hashlib
 import random
 from datetime import date, timedelta
+from functools import cache
+from itertools import accumulate
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +36,68 @@ BANKS_BY_COUNTRY: dict[str, tuple[list[str], int]] = {
 }
 # Mostly domestic counterparties, with a few foreign ones so is_domestic_iban varies.
 COUNTRY_MIX = ["FR"] * 8 + ["BE", "DE"]
+
+# ---------------------------------------------------------------------------
+# Realism mechanisms (docs/DESIGN.md, "Synthetic data generator"). Each rule
+# mirrors how real books behave; scripts/estimate_ceiling.py models every one.
+# ---------------------------------------------------------------------------
+
+# An account's counterparty is one of its few regular suppliers or clients most
+# of the time, otherwise anyone in the account's pool.
+REGULAR_COUNTERPARTIES = 3
+REGULAR_COUNTERPARTY_RATE = 0.80
+
+# Accounts paid on a calendar: (months or None for every month, first day,
+# last day or None for the month's end). Other accounts use the default spread.
+CALENDAR_RULES: dict[str, tuple[tuple[int, ...] | None, int, int | None]] = {
+    # Social contributions: days 5-15.
+    "431000": (None, 5, 15),
+    "437000": (None, 5, 15),
+    "645000": (None, 5, 15),
+    "646000": (None, 5, 15),
+    # VAT returns: days 17-24 of the month after each quarter.
+    "445660": ((1, 4, 7, 10), 17, 24),
+    "445710": ((1, 4, 7, 10), 17, 24),
+    # Corporate tax instalments: days 10-20 of each quarter's last month.
+    "691000": ((3, 6, 9, 12), 10, 20),
+    # Salaries: from day 25 to the end of the month.
+    "421000": (None, 25, None),
+    "641000": (None, 25, None),
+    "641100": (None, 25, None),
+    # Rent: days 1-5.
+    "613200": (None, 1, 5),
+    # Year-end closing entries.
+    "486000": ((12,), 20, None),
+    "681000": ((12,), 20, None),
+    "781000": ((12,), 20, None),
+}
+
+# Bank label channel: banks abbreviate the payment-type prefix differently, some
+# labels lose a character, and every label is cut to the bank's display width.
+# Structured remarks are machine-written and pass through untouched.
+LABEL_VARIANTS: dict[str, list[tuple[str, float]]] = {
+    "PRLV SEPA ": [("PRLV SEPA ", 0.60), ("PRELEVEMENT SEPA ", 0.25), ("PRLVT SEPA ", 0.15)],
+    "VIR SEPA ": [("VIR SEPA ", 0.60), ("VIREMENT SEPA ", 0.25), ("VIR ", 0.15)],
+    "VIR RECU ": [("VIR RECU ", 0.70), ("VIREMENT RECU ", 0.30)],
+    "CB ": [("CB ", 0.60), ("CARTE ", 0.25), ("PAIEMENT CB ", 0.15)],
+}
+TYPO_RATE = 0.05
+BANK_LABEL_LENGTH = 32
+
+# Bookkeepers disagree between neighbouring accounts: this share of a paired
+# account's rows is recorded under its sibling.
+LABEL_NOISE_RATE = 0.03
+SIBLING_ACCOUNTS: dict[str, str] = {
+    code: sibling
+    for pair in (
+        ("606100", "606300"),
+        ("625100", "625200"),
+        ("641000", "641100"),
+        ("401000", "401100"),
+        ("411000", "411100"),
+    )
+    for code, sibling in (pair, pair[::-1])
+}
 
 # ---------------------------------------------------------------------------
 # French PCG accounting codes with target counts (power-law distribution)
@@ -737,34 +801,72 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
     ],
 }
 
+# Accounts that share wording and differ only by amount: the same equipment
+# purchase is expensed below the EUR 500 capitalisation threshold and capitalised
+# from it, and a loan instalment splits into capital (164000) and interest.
+AMOUNT_DECIDED_TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = {
+    "606300": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (10, 499.99))],
+    "218000": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (500, 15000))],
+    "661000": [
+        ("PRLV SEPA ECHEANCE EMPRUNT", "PRLV SEPA LIB:ECHEANCE EMPRUNT {ref8}", True, (20, 800))
+    ],
+}
+for _code, _variants in AMOUNT_DECIDED_TEMPLATES.items():
+    TEMPLATES[_code].extend(_variants)
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
+_ALL_DAYS = [
+    DATE_START + timedelta(days=offset) for offset in range((DATE_END - DATE_START).days + 1)
+]
 
-def random_date() -> date:
-    """Generate a random date between DATE_START and DATE_END.
 
-    40% of dates are clustered near month-end (days 25-31) to mimic
-    real treasury patterns (salary, social charges, rent).
+def _default_date_distribution() -> dict[date, float]:
+    """Dates for accounts without a calendar rule.
+
+    40% cluster at month end (a uniform year, month and day 25-31, clamped to the
+    month's last day) to mimic treasury patterns; the rest spread uniformly.
     """
-    delta_days = (DATE_END - DATE_START).days
-    if random.random() < 0.4:
-        # Month-end clustering
-        year = random.choice([2024, 2025])
-        month = random.randint(1, 12)
-        day = random.randint(25, 31)
-        # Clamp to valid day
-        try:
-            return date(year, month, day)
-        except ValueError:
-            # Day out of range for month -- use last day
+    pmf = dict.fromkeys(_ALL_DAYS, 0.6 / len(_ALL_DAYS))
+    for year in (2024, 2025):
+        for month in range(1, 13):
             next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-            return next_month - timedelta(days=1)
-    else:
-        offset = random.randint(0, delta_days)
-        return DATE_START + timedelta(days=offset)
+            last_day = (next_month - timedelta(days=1)).day
+            for day in range(25, 32):
+                pmf[date(year, month, min(day, last_day))] += 0.4 / (2 * 12 * 7)
+    return pmf
+
+
+@cache
+def date_distribution(account_code: str) -> dict[date, float]:
+    """P(posting date | account code), read as exact probabilities by estimate_ceiling.py."""
+    rule = CALENDAR_RULES.get(account_code)
+    if rule is None:
+        return _default_date_distribution()
+    months, first_day, last_day = rule
+    days = [
+        day
+        for day in _ALL_DAYS
+        if (months is None or day.month in months)
+        and first_day <= day.day
+        and (last_day is None or day.day <= last_day)
+    ]
+    return dict.fromkeys(days, 1 / len(days))
+
+
+@cache
+def _date_sampler(account_code: str) -> tuple[list[date], list[float]]:
+    pmf = date_distribution(account_code)
+    return list(pmf), list(accumulate(pmf.values()))
+
+
+def pick_date(account_code: str) -> date:
+    """Draw a posting date from the account's date distribution."""
+    days, cum_weights = _date_sampler(account_code)
+    return random.choices(days, cum_weights=cum_weights)[0]
 
 
 def counterparty_bank(entity: str) -> tuple[str, str, str]:
@@ -855,9 +957,47 @@ def entity_pool(account_code: str) -> list[str]:
         return SUPPLIER_ENTITIES
 
 
+def entity_weights(account_code: str) -> dict[str, float]:
+    """P(counterparty | account code): mostly a few regulars, otherwise anyone in the pool."""
+    names = list(dict.fromkeys(entity_pool(account_code)))
+    regulars = sorted(
+        names, key=lambda name: hashlib.sha256(f"{account_code}:{name}".encode()).hexdigest()
+    )[:REGULAR_COUNTERPARTIES]
+    weights = dict.fromkeys(names, (1 - REGULAR_COUNTERPARTY_RATE) / len(names))
+    for name in regulars:
+        weights[name] += REGULAR_COUNTERPARTY_RATE / len(regulars)
+    return weights
+
+
 def pick_entity(account_code: str) -> str:
-    """Pick a contextually appropriate entity name for an account code."""
-    return random.choice(entity_pool(account_code))
+    """Draw a counterparty from the account's counterparty distribution."""
+    weights = entity_weights(account_code)
+    return random.choices(list(weights), weights=list(weights.values()))[0]
+
+
+def label_variants(description_pattern: str) -> list[tuple[str, float]]:
+    """How banks render a description pattern's payment-type prefix, with probabilities."""
+    for prefix, variants in LABEL_VARIANTS.items():
+        if description_pattern.startswith(prefix):
+            rest = description_pattern[len(prefix) :]
+            return [(rendered + rest, p) for rendered, p in variants]
+    return [(description_pattern, 1.0)]
+
+
+def bank_label(description: str) -> str:
+    """Pass a filled description through the bank: a dropped character, then truncation."""
+    if random.random() < TYPO_RATE:
+        position = random.randrange(len(description))
+        description = description[:position] + description[position + 1 :]
+    return description[:BANK_LABEL_LENGTH]
+
+
+def recorded_account(account_code: str) -> str:
+    """The account a bookkeeper records: occasionally the sibling account."""
+    sibling = SIBLING_ACCOUNTS.get(account_code)
+    if sibling is not None and random.random() < LABEL_NOISE_RATE:
+        return sibling
+    return account_code
 
 
 # ---------------------------------------------------------------------------
@@ -886,10 +1026,14 @@ def main() -> None:
             description_pattern, remarks_pattern, is_debit, (amt_low, amt_high) = tpl
 
             entity = pick_entity(account_code)
-            tx_date = random_date()
+            tx_date = pick_date(account_code)
             amount = generate_amount(amt_low, amt_high)
 
-            description = fill_template(description_pattern, entity, tx_date)
+            variants = label_variants(description_pattern)
+            label_pattern = random.choices(
+                [rendered for rendered, _ in variants], weights=[p for _, p in variants]
+            )[0]
+            description = bank_label(fill_template(label_pattern, entity, tx_date))
 
             if remarks_pattern is not None and random.random() < REMARKS_RATE:
                 remarks_raw = fill_template(remarks_pattern, entity, tx_date)
@@ -909,7 +1053,7 @@ def main() -> None:
 
             rows.append(
                 {
-                    "account_code": account_code,
+                    "account_code": recorded_account(account_code),
                     "description": description,
                     "reference": reference,
                     "remarks": remarks,
