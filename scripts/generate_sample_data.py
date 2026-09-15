@@ -1,13 +1,15 @@
 """Generate synthetic French accounting transaction data.
 
-Produces a deterministic (seeded) dataset at data/sample.csv that is realistic
-enough to exercise all domain features during training, while containing zero
-proprietary data.
+Books a single synthetic company's bank journal: transactions are allocated to account
+codes, filled from templates, and written one row per journal line. The dataset is
+deterministic for a given seed and contains zero proprietary data.
 
 Usage:
-    python scripts/generate_sample_data.py
+    uv run python scripts/generate_sample_data.py
+    uv run python scripts/generate_sample_data.py --classes 300 --rows 50000 --output data/generated/x.csv
 """
 
+import argparse
 import csv
 import hashlib
 import random
@@ -15,17 +17,18 @@ from datetime import date, timedelta
 from functools import cache
 from itertools import accumulate
 from pathlib import Path
+from typing import NamedTuple
 
-import numpy as np
-
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-
+DEFAULT_CLASSES = 100
+DEFAULT_ROWS = 10_000
+DEFAULT_SEED = 42
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "sample.csv"
-N_ROWS = 7500
 DATE_START = date(2024, 1, 1)
 DATE_END = date(2025, 12, 31)
+
+# Every primary account gets at least this many transactions, so each class clears
+# the loader's min_class_samples filter and reaches the training block.
+MIN_TRANSACTIONS = 20
 
 # Counterparty banks by country: BIC characters 5-6 carry the country code, and
 # the int is the BBAN length that follows the IBAN's 4-character prefix.
@@ -93,8 +96,6 @@ SIBLING_ACCOUNTS: dict[str, str] = {
         ("606100", "606300"),
         ("625100", "625200"),
         ("641000", "641100"),
-        ("401000", "401100"),
-        ("411000", "411100"),
     )
     for code, sibling in (pair, pair[::-1])
 }
@@ -104,14 +105,10 @@ SIBLING_ACCOUNTS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 ACCOUNT_CODES: dict[str, int] = {
     # High frequency (370+ samples each)
-    "401000": 556,
-    "411000": 494,
     "601100": 432,
     "641000": 395,
     "512000": 370,
     # Medium frequency (99-222 each)
-    "401100": 222,
-    "411100": 210,
     "606100": 198,
     "613200": 185,
     "621000": 173,
@@ -134,11 +131,9 @@ ACCOUNT_CODES: dict[str, int] = {
     "218000": 43,
     "261000": 37,
     "275000": 31,
-    "401200": 68,
     "403000": 62,
     "404000": 56,
     "408000": 49,
-    "411200": 68,
     "416000": 62,
     "419000": 56,
     "421000": 74,
@@ -150,6 +145,7 @@ ACCOUNT_CODES: dict[str, int] = {
     "471000": 37,
     "486000": 31,
     "512100": 68,
+    "511500": 68,
     "514000": 62,
     "530000": 56,
     "580000": 49,
@@ -275,45 +271,10 @@ QUARTERS_FR = ["T1", "T2", "T3", "T4"]
 # Templates: (description_pattern, remarks_pattern | None, is_debit, (min_amount, max_amount))
 # Each account code maps to a list of template variants.
 # ---------------------------------------------------------------------------
-TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = {
-    # --- 401xxx: Supplier payments (debit) ---
-    "401000": [
-        (
-            "PRLV SEPA {entity}",
-            "PRLV SEPA CPY:{ref8} RUM:{ref8} NBE:{entity} LIB:REGLEMENT FACTURE",
-            True,
-            (100, 15000),
-        ),
-        (
-            "VIR SEPA {entity}",
-            "VIR SEPA REF:{ref8} NPY:{entity} LIB:COMMANDE FOURNITURES LCC:BON COMMANDE {ref6}",
-            True,
-            (200, 25000),
-        ),
-        (
-            "PRLV SEPA {entity}",
-            "PRLV SEPA CPY:{ref8} NBE:{entity} LIB:FACTURE {inv}",
-            True,
-            (50, 8000),
-        ),
-    ],
-    "401100": [
-        (
-            "VIR SEPA {entity}",
-            "VIR SEPA REF:{ref8} NPY:{entity} LIB:FACTURE FOURNISSEUR {inv} LC2:ECHEANCE {month}",
-            True,
-            (150, 12000),
-        ),
-        ("PRLV SEPA {entity}", "PRLV SEPA NBE:{entity} LIB:REGLEMENT ACHAT", True, (80, 5000)),
-    ],
-    "401200": [
-        (
-            "VIR SEPA {entity}",
-            "VIR SEPA REF:{ref8} NPY:{entity} LIB:ACOMPTE FOURNISSEUR",
-            True,
-            (500, 20000),
-        ),
-    ],
+TemplateSpec = tuple[str, str | None, bool, tuple[float, float]]
+
+TEMPLATES: dict[str, list[TemplateSpec]] = {
+    # --- 403-408: Other supplier accounts (debit) ---
     "403000": [
         ("VIR SEPA {entity}", "VIR SEPA NPY:{entity} LIB:EFFETS A PAYER", True, (1000, 30000)),
     ],
@@ -333,29 +294,7 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
             (100, 5000),
         ),
     ],
-    # --- 411xxx: Client receipts (credit) ---
-    "411000": [
-        (
-            "VIR RECU {entity}",
-            "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} "
-            "RCN:{inv} LIB:REGLEMENT FACTURE {inv}",
-            False,
-            (500, 50000),
-        ),
-        ("ENCAISSEMENT CB", "REMISE CB DU {date6} PAYPAL", False, (10, 2000)),
-        ("REMISE CHEQUE", "REMISE CHQ N {ref6}", False, (100, 15000)),
-    ],
-    "411100": [
-        (
-            "VIR RECU {entity}",
-            "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} LIB:REGLEMENT CLIENT {inv}",
-            False,
-            (200, 30000),
-        ),
-    ],
-    "411200": [
-        ("ENCAISSEMENT CB", "REMISE CB DU {date6} LIB:ENCAISSEMENT CARTE", False, (15, 3000)),
-    ],
+    # --- 416-419: Other customer accounts (credit) ---
     "416000": [
         ("VIR RECU {entity}", "VIR SEPA NPY:{entity} LIB:CREANCE DOUTEUSE", False, (100, 10000)),
     ],
@@ -439,6 +378,11 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
     ],
     "514000": [
         ("REMISE CHEQUE", "REMISE CHQ N {ref6} LIB:ENCAISSEMENT CHEQUE", False, (50, 10000)),
+        ("REMISE CHEQUE", "REMISE CHQ N {ref6}", False, (100, 15000)),
+    ],
+    # --- 5115: Card remittances ---
+    "511500": [
+        ("ENCAISSEMENT CB", "REMISE CB DU {date6} LIB:ENCAISSEMENT CARTE", False, (15, 3000)),
     ],
     "530000": [
         ("RETRAIT CAISSE", "RETRAIT DAB LIB:APPROVISIONNEMENT CAISSE", True, (50, 1000)),
@@ -804,7 +748,7 @@ TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = 
 # Accounts that share wording and differ only by amount: the same equipment
 # purchase is expensed below the EUR 500 capitalisation threshold and capitalised
 # from it, and a loan instalment splits into capital (164000) and interest.
-AMOUNT_DECIDED_TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[float, float]]]] = {
+AMOUNT_DECIDED_TEMPLATES: dict[str, list[TemplateSpec]] = {
     "606300": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (10, 499.99))],
     "218000": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (500, 15000))],
     "661000": [
@@ -813,6 +757,186 @@ AMOUNT_DECIDED_TEMPLATES: dict[str, list[tuple[str, str | None, bool, tuple[floa
 }
 for _code, _variants in AMOUNT_DECIDED_TEMPLATES.items():
     TEMPLATES[_code].extend(_variants)
+
+
+# ---------------------------------------------------------------------------
+# Counterparty sub-accounts (PCG subdivisions of 401 suppliers and 411 customers)
+# ---------------------------------------------------------------------------
+
+SUB_ACCOUNT_PREFIXES = ("401", "411")
+MAX_SUB_ACCOUNTS = 999
+# Combined weight of the generic codes the sub-accounts replace: 401000, 401100 and
+# 401200 for suppliers; 411000 and 411100 for customers (411200's goes to 511500).
+SUPPLIER_WEIGHT = 846
+CUSTOMER_WEIGHT = 704
+
+SUPPLIER_TEMPLATES: list[TemplateSpec] = [
+    (
+        "PRLV SEPA {entity}",
+        "PRLV SEPA CPY:{ref8} RUM:{ref8} NBE:{entity} LIB:REGLEMENT FACTURE",
+        True,
+        (100, 15000),
+    ),
+    (
+        "VIR SEPA {entity}",
+        "VIR SEPA REF:{ref8} NPY:{entity} LIB:COMMANDE FOURNITURES LCC:BON COMMANDE {ref6}",
+        True,
+        (200, 25000),
+    ),
+    (
+        "PRLV SEPA {entity}",
+        "PRLV SEPA CPY:{ref8} NBE:{entity} LIB:FACTURE {inv}",
+        True,
+        (50, 8000),
+    ),
+    (
+        "VIR SEPA {entity}",
+        "VIR SEPA REF:{ref8} NPY:{entity} LIB:FACTURE FOURNISSEUR {inv} LC2:ECHEANCE {month}",
+        True,
+        (150, 12000),
+    ),
+    ("PRLV SEPA {entity}", "PRLV SEPA NBE:{entity} LIB:REGLEMENT ACHAT", True, (80, 5000)),
+    (
+        "VIR SEPA {entity}",
+        "VIR SEPA REF:{ref8} NPY:{entity} LIB:ACOMPTE FOURNISSEUR",
+        True,
+        (500, 20000),
+    ),
+]
+
+CUSTOMER_TEMPLATES: list[TemplateSpec] = [
+    (
+        "VIR RECU {entity}",
+        "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} "
+        "RCN:{inv} LIB:REGLEMENT FACTURE {inv}",
+        False,
+        (500, 50000),
+    ),
+    (
+        "VIR RECU {entity}",
+        "VIR SEPA NPY:{entity} IBE:{iban} BIC:{bic} PDO:{country} LIB:REGLEMENT CLIENT {inv}",
+        False,
+        (200, 30000),
+    ),
+]
+
+SURNAMES = [
+    "MARTIN", "BERNARD", "THOMAS", "PETIT", "ROBERT", "RICHARD", "DURAND", "DUBOIS",
+    "MOREAU", "LAURENT", "SIMON", "MICHEL", "LEFEBVRE", "LEROY", "ROUX", "DAVID",
+    "BERTRAND", "MOREL", "FOURNIER", "GIRARD", "BONNET", "DUPONT", "LAMBERT", "FONTAINE",
+    "ROUSSEAU", "VINCENT", "MULLER", "LEFEVRE", "FAURE", "ANDRE", "MERCIER", "BLANC",
+    "GUERIN", "BOYER", "GARNIER", "CHEVALIER", "FRANCOIS", "LEGRAND", "GAUTHIER", "GARCIA",
+    "PERRIN", "ROBIN", "CLEMENT", "MORIN", "NICOLAS", "HENRY", "ROUSSEL", "MATHIEU",
+    "GAUTIER", "MASSON", "MARCHAND", "DUVAL", "DENIS", "DUMONT", "MARIE", "LEMAIRE",
+    "NOEL", "MEYER", "DUFOUR", "MEUNIER",
+]  # fmt: skip
+ACTIVITIES = [
+    "BTP", "TRANSPORTS", "CONSEIL", "NEGOCE", "INDUSTRIE", "SERVICES", "DISTRIBUTION",
+    "IMMOBILIER", "INFORMATIQUE", "LOGISTIQUE", "RESTAURATION", "SECURITE", "NETTOYAGE",
+    "IMPRIMERIE", "ELECTRICITE",
+]  # fmt: skip
+LEGAL_FORMS = ["SAS", "SARL", "EURL", "SA", "SCI"]
+
+
+@cache
+def counterparty_names() -> list[str]:
+    """Every sub-account counterparty name, in a fixed hash order."""
+    names = [
+        f"{form} {surname} {activity}"
+        for form in LEGAL_FORMS
+        for surname in SURNAMES
+        for activity in ACTIVITIES
+    ]
+    return sorted(names, key=lambda name: hashlib.sha256(name.encode()).hexdigest())
+
+
+def is_sub_account(account_code: str) -> bool:
+    return account_code[:3] in SUB_ACCOUNT_PREFIXES
+
+
+def sub_account_name(account_code: str) -> str:
+    """The single counterparty booked to a supplier or customer sub-account.
+
+    Suppliers take the even positions of counterparty_names() and customers the odd
+    ones, so no name is both.
+    """
+    index = int(account_code[3:]) - 1
+    return counterparty_names()[2 * index + SUB_ACCOUNT_PREFIXES.index(account_code[:3])]
+
+
+def sub_account_codes(n_classes: int) -> list[str]:
+    """Supplier then customer sub-accounts filling the classes the general catalogue leaves."""
+    n_sub_accounts = n_classes - len(general_codes())
+    if n_sub_accounts < 2:
+        raise ValueError(f"--classes must be at least {len(general_codes()) + 2}, got {n_classes}")
+    n_suppliers, n_customers = (n_sub_accounts + 1) // 2, n_sub_accounts // 2
+    if n_suppliers > MAX_SUB_ACCOUNTS:
+        raise ValueError(f"--classes allows at most {MAX_SUB_ACCOUNTS} sub-accounts per prefix")
+    return [f"401{i:03d}" for i in range(1, n_suppliers + 1)] + [
+        f"411{i:03d}" for i in range(1, n_customers + 1)
+    ]
+
+
+@cache
+def general_codes() -> frozenset[str]:
+    """Every account code the general catalogue can put in the output."""
+    return frozenset(ACCOUNT_CODES)
+
+
+def lines_per_transaction(account_code: str) -> int:
+    """Journal lines one transaction of this primary account books."""
+    return 1
+
+
+def transaction_floor(account_code: str) -> int:
+    """Minimum transactions for a primary account."""
+    return MIN_TRANSACTIONS
+
+
+def transaction_counts(n_classes: int, n_rows: int) -> dict[str, int]:
+    """Transactions per primary account, so the output has about *n_rows* lines.
+
+    General accounts keep their catalogue weights; sub-accounts share the supplier and
+    customer weights by a Zipf law with exponent 1. Every account gets its floor, and one
+    scale factor, found by bisection, sizes the rest.
+    """
+    weights: dict[str, float] = dict(ACCOUNT_CODES)
+    sub_accounts = sub_account_codes(n_classes)
+    for prefix, total in (("401", SUPPLIER_WEIGHT), ("411", CUSTOMER_WEIGHT)):
+        family = [code for code in sub_accounts if code.startswith(prefix)]
+        harmonic = sum(1 / rank for rank in range(1, len(family) + 1))
+        for rank, code in enumerate(family, start=1):
+            weights[code] = total / (rank * harmonic)
+
+    def counts(scale: float) -> dict[str, int]:
+        return {
+            code: max(transaction_floor(code), round(w * scale)) for code, w in weights.items()
+        }
+
+    def total_lines(scale: float) -> int:
+        return sum(n * lines_per_transaction(code) for code, n in counts(scale).items())
+
+    minimum = total_lines(0.0)
+    if minimum > n_rows:
+        raise ValueError(f"--rows must be at least {minimum} for {n_classes} classes")
+    low, high = 0.0, 1.0
+    while total_lines(high) < n_rows:
+        high *= 2
+    for _ in range(60):
+        mid = (low + high) / 2
+        if total_lines(mid) < n_rows:
+            low = mid
+        else:
+            high = mid
+    return counts(high)
+
+
+def templates_for(account_code: str) -> list[TemplateSpec]:
+    if account_code.startswith("401"):
+        return SUPPLIER_TEMPLATES
+    if account_code.startswith("411"):
+        return CUSTOMER_TEMPLATES
+    return TEMPLATES[account_code]
 
 
 # ---------------------------------------------------------------------------
@@ -863,10 +987,10 @@ def _date_sampler(account_code: str) -> tuple[list[date], list[float]]:
     return list(pmf), list(accumulate(pmf.values()))
 
 
-def pick_date(account_code: str) -> date:
+def pick_date(rng: random.Random, account_code: str) -> date:
     """Draw a posting date from the account's date distribution."""
     days, cum_weights = _date_sampler(account_code)
-    return random.choices(days, cum_weights=cum_weights)[0]
+    return rng.choices(days, cum_weights=cum_weights)[0]
 
 
 def counterparty_bank(entity: str) -> tuple[str, str, str]:
@@ -885,7 +1009,7 @@ def counterparty_bank(entity: str) -> tuple[str, str, str]:
     return f"{country}{check_digits}{bban:0{bban_length}d}", bic, country
 
 
-def fill_template(template: str, entity: str, tx_date: date) -> str:
+def fill_template(rng: random.Random, template: str, entity: str, tx_date: date) -> str:
     """Replace placeholders in a template string."""
     iban, bic, country = counterparty_bank(entity)
     result = template
@@ -893,9 +1017,9 @@ def fill_template(template: str, entity: str, tx_date: date) -> str:
     result = result.replace("{iban}", iban)
     result = result.replace("{bic}", bic)
     result = result.replace("{country}", country)
-    result = result.replace("{ref8}", f"FR{random.randint(10000000, 99999999)}")
-    result = result.replace("{ref6}", str(random.randint(100000, 999999)))
-    result = result.replace("{inv}", f"FAC{random.randint(2024000, 2025999)}")
+    result = result.replace("{ref8}", f"FR{rng.randint(10000000, 99999999)}")
+    result = result.replace("{ref6}", str(rng.randint(100000, 999999)))
+    result = result.replace("{inv}", f"FAC{rng.randint(2024000, 2025999)}")
     result = result.replace("{date6}", tx_date.strftime("%d%m%y"))
     result = result.replace("{month}", MONTHS_FR[tx_date.month - 1])
     result = result.replace("{quarter}", QUARTERS_FR[(tx_date.month - 1) // 3])
@@ -906,19 +1030,18 @@ def fill_template(template: str, entity: str, tx_date: date) -> str:
 # Share of amounts drawn as a round multiple, and the multiples used.
 ROUND_AMOUNT_RATE = 0.2
 ROUND_MAGNITUDES = [10, 50, 100, 500, 1000]
-# Share of rows that carry remarks (matching real-world distribution).
+# Share of transactions that carry structured remarks.
 REMARKS_RATE = 0.30
 
 
-def generate_amount(low: float, high: float) -> float:
-    """Generate a transaction amount with a round-amount bias."""
-    if random.random() < ROUND_AMOUNT_RATE:
-        # Round amount
-        magnitude = random.choice(ROUND_MAGNITUDES)
-        amount = magnitude * random.randint(1, max(1, int(high / magnitude)))
-        return float(max(low, min(high, amount)))
-    else:
-        return round(random.uniform(low, high), 2)
+def generate_amount_cents(rng: random.Random, low: float, high: float) -> int:
+    """Draw an amount in cents: a round multiple clipped to the range, or a uniform cent value."""
+    low_cents, high_cents = round(low * 100), round(high * 100)
+    if rng.random() < ROUND_AMOUNT_RATE:
+        magnitude = rng.choice(ROUND_MAGNITUDES)
+        multiple = magnitude * rng.randint(1, max(1, int(high / magnitude))) * 100
+        return min(high_cents, max(low_cents, multiple))
+    return rng.randint(low_cents, high_cents)
 
 
 def format_comment_html(comment: str) -> str:
@@ -931,9 +1054,10 @@ def format_comment_html(comment: str) -> str:
 
 def entity_pool(account_code: str) -> list[str]:
     """Counterparty names a row of this account code can carry."""
+    if is_sub_account(account_code):
+        return [sub_account_name(account_code)]
     prefix = account_code[:3]
     if prefix in (
-        "411",
         "416",
         "419",
         "701",
@@ -957,6 +1081,7 @@ def entity_pool(account_code: str) -> list[str]:
         return SUPPLIER_ENTITIES
 
 
+@cache
 def entity_weights(account_code: str) -> dict[str, float]:
     """P(counterparty | account code): mostly a few regulars, otherwise anyone in the pool."""
     names = list(dict.fromkeys(entity_pool(account_code)))
@@ -969,10 +1094,10 @@ def entity_weights(account_code: str) -> dict[str, float]:
     return weights
 
 
-def pick_entity(account_code: str) -> str:
+def pick_entity(rng: random.Random, account_code: str) -> str:
     """Draw a counterparty from the account's counterparty distribution."""
     weights = entity_weights(account_code)
-    return random.choices(list(weights), weights=list(weights.values()))[0]
+    return rng.choices(list(weights), weights=list(weights.values()))[0]
 
 
 def label_variants(description_pattern: str) -> list[tuple[str, float]]:
@@ -984,108 +1109,127 @@ def label_variants(description_pattern: str) -> list[tuple[str, float]]:
     return [(description_pattern, 1.0)]
 
 
-def bank_label(description: str) -> str:
+def bank_label(rng: random.Random, description: str) -> str:
     """Pass a filled description through the bank: a dropped character, then truncation."""
-    if random.random() < TYPO_RATE:
-        position = random.randrange(len(description))
+    if rng.random() < TYPO_RATE:
+        position = rng.randrange(len(description))
         description = description[:position] + description[position + 1 :]
     return description[:BANK_LABEL_LENGTH]
 
 
-def recorded_account(account_code: str) -> str:
+def recorded_account(rng: random.Random, account_code: str) -> str:
     """The account a bookkeeper records: occasionally the sibling account."""
     sibling = SIBLING_ACCOUNTS.get(account_code)
-    if sibling is not None and random.random() < LABEL_NOISE_RATE:
+    if sibling is not None and rng.random() < LABEL_NOISE_RATE:
         return sibling
     return account_code
 
 
 # ---------------------------------------------------------------------------
-# Main generation
+# Generation
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    rows: list[dict[str, str]] = []
+class Line(NamedTuple):
+    """One journal line of a bank transaction, the unit the CSV stores as a row."""
 
-    for account_code, count in ACCOUNT_CODES.items():
-        templates = TEMPLATES.get(account_code)
-        if templates is None:
-            # Fallback: generic template for codes without specific templates
-            templates = [
-                (
-                    "VIR SEPA {entity}",
-                    "VIR SEPA NPY:{entity} LIB:OPERATION DIVERSE",
-                    True,
-                    (100, 10000),
-                ),
-            ]
+    account_code: str
+    cents: int
+    is_debit: bool
 
+
+class Transaction(NamedTuple):
+    primary: str
+    cents: int
+    posting_date: date
+    description: str
+    remarks: str
+    reference: str
+    lines: tuple[Line, ...]
+
+
+def generate(n_classes: int, n_rows: int, seed: int) -> list[Transaction]:
+    """Book a company's bank journal with exactly *n_classes* account codes."""
+    rng = random.Random(seed)
+    transactions: list[Transaction] = []
+    for primary, count in transaction_counts(n_classes, n_rows).items():
+        templates = templates_for(primary)
         for _ in range(count):
-            tpl = random.choice(templates)
-            description_pattern, remarks_pattern, is_debit, (amt_low, amt_high) = tpl
-
-            entity = pick_entity(account_code)
-            tx_date = pick_date(account_code)
-            amount = generate_amount(amt_low, amt_high)
+            description_pattern, remarks_pattern, is_debit, (low, high) = rng.choice(templates)
+            entity = pick_entity(rng, primary)
+            tx_date = pick_date(rng, primary)
+            cents = generate_amount_cents(rng, low, high)
 
             variants = label_variants(description_pattern)
-            label_pattern = random.choices(
+            label_pattern = rng.choices(
                 [rendered for rendered, _ in variants], weights=[p for _, p in variants]
             )[0]
-            description = bank_label(fill_template(label_pattern, entity, tx_date))
+            description = bank_label(rng, fill_template(rng, label_pattern, entity, tx_date))
 
-            if remarks_pattern is not None and random.random() < REMARKS_RATE:
-                remarks_raw = fill_template(remarks_pattern, entity, tx_date)
-                remarks = format_comment_html(remarks_raw)
-            else:
-                remarks = ""
+            remarks = ""
+            if remarks_pattern is not None and rng.random() < REMARKS_RATE:
+                remarks = format_comment_html(fill_template(rng, remarks_pattern, entity, tx_date))
+            reference = f"REF{rng.randint(100000, 999999)}" if rng.random() < 0.15 else ""
 
-            # ~15% of rows get a reference number
-            reference = ""
-            if random.random() < 0.15:
-                reference = f"REF{random.randint(100000, 999999)}"
-
-            if is_debit:
-                credit, debit = 0, amount
-            else:
-                credit, debit = amount, 0
-
-            rows.append(
-                {
-                    "account_code": recorded_account(account_code),
-                    "description": description,
-                    "reference": reference,
-                    "remarks": remarks,
-                    "credit": f"{credit:.2f}" if credit else "0",
-                    "debit": f"{debit:.2f}" if debit else "0",
-                    "posting_date": tx_date.isoformat(),
-                }
+            lines = (Line(recorded_account(rng, primary), cents, is_debit),)
+            transactions.append(
+                Transaction(primary, cents, tx_date, description, remarks, reference, lines)
             )
+    rng.shuffle(transactions)
+    return transactions
 
-    # Shuffle deterministically (seed already set)
-    random.shuffle(rows)
 
-    # Write CSV
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "account_code",
-        "description",
-        "reference",
-        "remarks",
-        "credit",
-        "debit",
-        "posting_date",
-    ]
+FIELDNAMES = [
+    "account_code",
+    "description",
+    "reference",
+    "remarks",
+    "credit",
+    "debit",
+    "posting_date",
+]
 
-    with OUTPUT_PATH.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+def write_csv(transactions: list[Transaction], path: Path) -> None:
+    """Write one row per journal line; a transaction's lines share every text field and the date."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
-        writer.writerows(rows)
+        for transaction in transactions:
+            for line in transaction.lines:
+                amount = f"{line.cents // 100}.{line.cents % 100:02d}"
+                writer.writerow(
+                    {
+                        "account_code": line.account_code,
+                        "description": transaction.description,
+                        "reference": transaction.reference,
+                        "remarks": transaction.remarks,
+                        "credit": "0" if line.is_debit else amount,
+                        "debit": amount if line.is_debit else "0",
+                        "posting_date": transaction.posting_date.isoformat(),
+                    }
+                )
 
-    total = sum(ACCOUNT_CODES.values())
-    print(f"Generated {len(rows)} rows ({total} target) across {len(ACCOUNT_CODES)} account codes")
-    print(f"Output: {OUTPUT_PATH}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate the synthetic bank journal.")
+    parser.add_argument("--classes", type=int, default=DEFAULT_CLASSES)
+    parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    args = parser.parse_args()
+    try:
+        transactions = generate(args.classes, args.rows, args.seed)
+    except ValueError as exc:
+        parser.error(str(exc))
+    write_csv(transactions, args.output)
+    n_lines = sum(len(t.lines) for t in transactions)
+    print(
+        f"Generated {n_lines} rows from {len(transactions)} transactions "
+        f"across {args.classes} account codes"
+    )
+    print(f"Output: {args.output}")
 
 
 if __name__ == "__main__":
