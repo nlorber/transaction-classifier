@@ -352,7 +352,7 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `n_estimators` | 500 | Budget for boosting rounds. Not expected to complete -- early stopping should kick in well before 500. |
+| `n_estimators` | 500 | Budget for boosting rounds. Early stopping ends training only after 40 rounds without improvement; on the synthetic samples it does not trigger before 500, so this budget binds (`reports/model_comparison.json` records each booster's best round). |
 | `patience` | 40 | Patience of 40 rounds on the validation set's `mlogloss`. Tighter than the previous 50-round default; sufficient to survive temporary plateaus while stopping sooner on flat loss curves. |
 | `max_depth` | 6 | Deeper than the XGBoost default (3). The feature space is dense (entity flags, amount buckets, TF-IDF tokens), and interactions between text features and amount patterns matter (e.g., "URSSAF" + salary range = specific account code). Depth 6 captures these interactions without exploding tree complexity. |
 | `learning_rate` | 0.05 | Moderate shrinkage. With early stopping, a lower rate builds a more robust ensemble at the cost of more iterations. 0.05 balances convergence speed and ensemble quality for typical dataset sizes. |
@@ -377,10 +377,10 @@ Measured on the held-out test block with the production hyperparameters (`uv run
 
 | Weighting | Top-1 | Top-3 | Top-5 | Balanced accuracy | Rare-class recall |
 |---|---|---|---|---|---|
-| none | 0.5812 | 0.8243 | 0.9175 | 0.4787 | 0.3750 |
-| **balanced (default)** | **0.5022** | **0.8075** | **0.9068** | **0.5689** | **0.5637** |
+| none | 0.7475 | 0.9174 | 0.9547 | 0.6132 | 0.3895 |
+| **balanced (default)** | **0.6023** | **0.8987** | **0.9587** | **0.6928** | **0.5406** |
 
-Rare-class recall is the mean recall over the 20 test-block classes in the bottom quartile of training counts. Balanced weights trade about 8pp of top-1 and 1pp of top-5 for +9pp balanced accuracy and +19pp recall on rare codes. The system is a top-K suggestion tool with an accountant confirming the code, so a rare account reliably reaching the shortlist is worth more than extra top-1 hits on frequent ones; set the flag to `false` where unattended top-1 automation matters more. Every manifest records `per_class_recall` on the test block, so the effect can be checked code by code.
+Rare-class recall is the mean recall over the 25 test-block classes in the bottom quartile of training counts. Balanced weights trade about 15pp of top-1 and 2pp of top-3, with top-5 unchanged (+0.4pp), for +8pp balanced accuracy and +15pp recall on rare codes. The system is a top-K suggestion tool with an accountant confirming the code, so a rare account reliably reaching the shortlist is worth more than extra top-1 hits on frequent ones; set the flag to `false` where unattended top-1 automation matters more. Every manifest records `per_class_recall` on the test block, so the effect can be checked code by code.
 
 ### Stochastic boosting
 
@@ -412,10 +412,10 @@ Accuracy on the held-out temporal test block (15% most recent transactions) with
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5324 | 0.4007 |
-| + numeric | 0.5909 | 0.4875 |
-| + date | 0.5794 | 0.4728 |
-| + domain (all features) | 0.5856 | 0.4831 |
+| TF-IDF only | 0.6176 | 0.4876 |
+| + numeric | 0.7582 | 0.6297 |
+| + date | 0.7515 | 0.6290 |
+| + domain (all features) | 0.7455 | 0.6211 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.
 

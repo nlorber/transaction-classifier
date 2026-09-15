@@ -10,22 +10,22 @@ Multi-class classification system that predicts French accounting codes from fin
 
 ## Key Results
 
-Trained on **synthetic data** (7,508 transactions, 80 account classes). On real client data with higher transaction volume and consistent labeling, top-1 accuracy is substantially higher — synthetic metrics above are a lower bound. Synthetic data uses uniform entity distribution and random label templates, removing the client-specific patterns that drive accuracy in production. The feature engineering (URSSAF deadlines, TVA periods, entity detection) was designed for these real-world signals.
+Trained on **synthetic data** (10,001 bank-journal lines from 7,867 transactions, 100 account classes). On real client data with higher transaction volume and consistent labeling, top-1 accuracy is substantially higher — synthetic metrics above are a lower bound. Synthetic data uses uniform entity distribution and random label templates, removing the client-specific patterns that drive accuracy in production. The feature engineering (URSSAF deadlines, TVA periods, entity detection) was designed for these real-world signals.
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 50.2% |
-| Top-3 accuracy | 80.7% |
-| Top-5 accuracy | 90.7% |
-| Top-10 accuracy | 98.8% |
-| Balanced accuracy | 56.9% |
-| Classes | 80 |
-| Evaluation samples | 1,127 |
-| Bayes ceiling, top-1 / top-5 | 67.8% / 94.8% |
+| Top-1 accuracy | 60.2% |
+| Top-3 accuracy | 89.9% |
+| Top-5 accuracy | 95.9% |
+| Top-10 accuracy | 98.4% |
+| Balanced accuracy | 69.3% |
+| Classes | 100 |
+| Evaluation samples | 1,501 |
+| Bayes ceiling, top-1 / top-5 | 85.0% / 99.3% |
 
 All rows are measured on the held-out temporal test block (the most recent 15% of transactions, never seen by early stopping or tuning). The ceiling row is the Bayes-optimal classifier under the generator's own sampling process, scored on the same test rows: no model can beat it in expectation, so it is the yardstick for every synthetic number above ([`scripts/estimate_ceiling.py`](scripts/estimate_ceiling.py) — committed run: [`reports/ceiling.json`](reports/ceiling.json)).
 
-See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and balanced accuracy matter more. Training uses balanced class weights, which trade about 8pp of top-1 for +9pp balanced accuracy and +19pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)).
+See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and balanced accuracy matter more. Training uses balanced class weights, which trade about 15pp of top-1 for +8pp balanced accuracy and +15pp recall on rare codes, with top-5 unchanged ([measured](docs/DESIGN.md#class-imbalance)).
 
 ### Feature Ablation
 
@@ -33,10 +33,10 @@ Cumulative accuracy on the held-out temporal test block. Each row adds one featu
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.5324 | 0.4007 |
-| + numeric | 0.5909 | 0.4875 |
-| + date | 0.5794 | 0.4728 |
-| + domain (all features) | 0.5856 | 0.4831 |
+| TF-IDF only | 0.6176 | 0.4876 |
+| + numeric | 0.7582 | 0.6297 |
+| + date | 0.7515 | 0.6290 |
+| + domain (all features) | 0.7455 | 0.6211 |
 
 Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal. Reproduce with `uv run python scripts/eval_ablation.py` — committed run: [`reports/feature_ablation.json`](reports/feature_ablation.json).
 
@@ -46,13 +46,13 @@ Same feature matrix, same temporal split, scored on the held-out test block. XGB
 
 | Model | Class weights | Top-1 | Top-5 | Balanced accuracy | F1 (weighted) | Train time |
 |---|---|---|---|---|---|---|
-| Logistic Regression | none | 0.5963 | 0.8891 | 0.5389 | 0.5812 | 9.9s |
-| Logistic Regression | balanced | 0.5306 | 0.8678 | 0.5726 | 0.5505 | 50.4s |
-| XGBoost | none | 0.5812 | 0.9175 | 0.4787 | 0.5505 | 50.5s |
-| **XGBoost** | **balanced** | **0.5022** | **0.9068** | **0.5689** | **0.5157** | **65.8s** |
-| LightGBM | none | 0.5546 | 0.8776 | 0.3874 | 0.5138 | 28.2s |
+| Logistic Regression | none | 0.7608 | 0.9714 | 0.6970 | 0.7500 | 15.7s |
+| Logistic Regression | balanced | 0.6382 | 0.9574 | 0.7442 | 0.6304 | 82.4s |
+| XGBoost | none | 0.7475 | 0.9547 | 0.6132 | 0.7252 | 80.0s |
+| **XGBoost** | **balanced** | **0.6023** | **0.9587** | **0.6928** | **0.5838** | **83.8s** |
+| LightGBM | none | 0.7009 | 0.9101 | 0.5248 | 0.6700 | 45.3s |
 
-On this synthetic data a scaled logistic regression is a close competitor to XGBoost: it leads on top-1 and weighted F1 and is the fastest to train without weights, while XGBoost leads on top-5 at either weighting. With balanced weights on both, their balanced accuracy is within half a point. The generator ties an entry's wording closely to its account code, a setting where linear models on TF-IDF features do well; neither model has been hyperparameter-searched for this comparison. Reproduce with `uv run python scripts/compare_models.py` — committed run: [`reports/model_comparison.json`](reports/model_comparison.json).
+On this synthetic data a scaled logistic regression outperforms XGBoost: it leads on top-1, balanced accuracy and weighted F1 at either weighting, leads on top-5 without weights, and is the fastest to train without weights. With balanced weights their top-5 is level (0.9574 vs 0.9587). XGBoost used all 500 of its boosting rounds in both runs, so its rows measure the production round budget rather than a converged model; neither model has been hyperparameter-searched for this comparison. Reproduce with `uv run python scripts/compare_models.py` — committed run: [`reports/model_comparison.json`](reports/model_comparison.json).
 
 ![Top-K Accuracy](reports/topk_accuracy.png)
 
@@ -115,7 +115,7 @@ flowchart LR
 
 ## Design Decisions
 
-**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (80 classes, long-tail distribution). Gradient-boosted trees handle sparse, mixed-type features without the architecture tuning that neural nets require, and imbalance is handled with balanced per-row sample weights rather than resampling — trading about 8pp of top-1 for +9pp balanced accuracy and +19pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)). Training completes in seconds, not hours, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
+**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (100 classes on the default sample, long-tail distribution). Gradient-boosted trees handle sparse, mixed-type features without the architecture tuning that neural nets require, and imbalance is handled with balanced per-row sample weights rather than resampling — trading about 15pp of top-1 for +8pp balanced accuracy and +15pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)). Training on the default sample takes about a minute, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
 
 **Why TF-IDF + domain features, not embeddings.** French accounting transaction text is formulaic: `URSSAF COTISATIONS`, `PRLV SEPA CPY:FR123`. Pattern-based features (entity detection, regex-extracted markers) outperform dense embeddings because the signal is in known keywords and structural patterns, not semantic meaning. TF-IDF character n-grams capture morphological variations (e.g., `COTISATION` vs `COTISATIONS`) without a pretrained language model. The feature space is sparse but highly discriminative for this domain.
 

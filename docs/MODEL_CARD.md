@@ -9,7 +9,7 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 - **Task:** multi-class classification of financial transactions into French accounting
   (Plan Comptable Général) codes.
 - **Architecture:** XGBoost gradient-boosted trees (500 estimators, depth 6, lr 0.05,
-  `min_child_weight` 10, `gamma` 0.5), one-vs-rest over **80 account classes**.
+  `min_child_weight` 10, `gamma` 0.5), one-vs-rest over **100 account classes**.
 - **Inputs / features:** three TF-IDF vectorizers (word n-grams on the `description` and
   `remarks` fields; character n-grams on combined text, capturing morphological variants
   like `COTISATION`/`COTISATIONS`) plus
@@ -26,8 +26,8 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 
 - **Primary use:** decision support for bookkeepers/accountants — surface a short ranked
   list of likely account codes for a transaction so a human selects/confirms. The top-K
-  design is deliberate: top-1 is moderate, but the correct code is in the top-3 ~83% of the
-  time and top-5 ~91% of the time (synthetic), which fits a "suggest, human confirms" loop.
+  design is deliberate: top-1 is moderate, but the correct code is in the top-3 ~90% of the
+  time and top-5 ~96% of the time (synthetic), which fits a "suggest, human confirms" loop.
 - **Intended users:** accounting/finance teams with a human in the loop.
 - **Out of scope / misuse:** autonomous ledger posting without human review; tax or legal
   compliance determinations; non-French charts of accounts; any setting where a wrong code
@@ -36,7 +36,7 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 
 ## Factors
 
-- **Account-code frequency:** the 80-class distribution is long-tailed. Rare codes
+- **Account-code frequency:** the 100-class distribution is long-tailed. Rare codes
   (<~50 training samples) are materially harder; this is the dominant performance factor.
 - **Transaction-label quality:** accuracy depends on consistent, structured labels
   (e.g. `URSSAF COTISATIONS`, `PRLV SEPA CPY:FR123`). Free-form or inconsistent labels degrade
@@ -46,35 +46,36 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 ## Metrics
 
 Evaluated on the held-out temporal test block (the most recent 15% of transactions, which neither
-early stopping nor tuning ever sees; n = **1,127** evaluation samples), with balanced class
+early stopping nor tuning ever sees; n = **1,501** evaluation samples), with balanced class
 weights (the default).
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 0.502 |
-| Top-3 accuracy | 0.807 |
-| Top-5 accuracy | 0.907 |
-| Top-10 accuracy | 0.988 |
-| Balanced accuracy | 0.569 |
+| Top-1 accuracy | 0.602 |
+| Top-3 accuracy | 0.899 |
+| Top-5 accuracy | 0.959 |
+| Top-10 accuracy | 0.984 |
+| Balanced accuracy | 0.693 |
 
-**Read accuracy (0.502) and balanced accuracy (0.569) together:** balanced class weights push
+**Read accuracy (0.602) and balanced accuracy (0.693) together:** balanced class weights push
 the model toward rare account codes, so the macro view sits *above* the headline. Without them
-the order flips (0.581 vs 0.479, [`reports/class_weighting.json`](../reports/class_weighting.json)):
+the order flips (0.748 vs 0.613, [`reports/class_weighting.json`](../reports/class_weighting.json)):
 frequent codes are predicted well and rare ones are missed. Top-1 is a poor summary of this
 system; the top-K ranking metrics are the ones aligned with its intended use. On this synthetic
-data no classifier can exceed a Bayes-optimal top-1 of 0.678 or top-5 of 0.949 on the same rows
+data no classifier can exceed a Bayes-optimal top-1 of 0.850 or top-5 of 0.993 on the same rows
 ([`reports/ceiling.json`](../reports/ceiling.json)).
 
 Model comparison on the same features and split
 ([`reports/model_comparison.json`](../reports/model_comparison.json)): on this synthetic data a
-scaled logistic regression is a close competitor. It leads on top-1 (0.596 vs 0.581 unweighted)
-and weighted F1, while XGBoost leads on top-5 (0.917 vs 0.889 unweighted; 0.907 vs 0.868 with
-balanced weights). LightGBM trails both. Neither model was hyperparameter-searched for the
-comparison.
+scaled logistic regression outperforms XGBoost. It leads on top-1 (0.761 vs 0.748 unweighted;
+0.638 vs 0.602 with balanced weights), balanced accuracy and weighted F1, and on top-5 without
+weights (0.971 vs 0.955); with balanced weights their top-5 is level (0.957 vs 0.959). LightGBM
+trails both on top-5 and balanced accuracy. XGBoost used all 500 boosting rounds in both runs,
+and neither model was hyperparameter-searched for the comparison.
 
 ## Training & Evaluation Data
 
-- **Source:** **synthetic** data — 7,508 transactions across 80 account classes, produced by
+- **Source:** **synthetic** data — 10,001 bank-journal lines from 7,867 transactions across 100 account classes, produced by
   `scripts/generate_sample_data.py`. No proprietary or personal data is used or distributed.
 - **Split:** temporal (chronological), **not** randomly shuffled — the earliest 70% train, the
   next 15% validate (early stopping, hyperparameter search), and the most recent 15% are a
@@ -84,7 +85,7 @@ comparison.
   same rows that grade it.
 - **Class weighting:** training rows carry balanced sample weights (`balanced_class_weights`,
   default on), so rare account codes weigh as much as frequent ones in the loss. On the test
-  block this costs about 8pp top-1 and 1pp top-5 for +9pp balanced accuracy
+  block this costs about 15pp top-1, with top-5 unchanged, for +8pp balanced accuracy
   ([`reports/class_weighting.json`](../reports/class_weighting.json)); every manifest records
   per-class recall.
 - **Known synthetic-vs-real gap:** the generator uses uniform entity distribution and random
@@ -96,8 +97,8 @@ comparison.
 
 ## Limitations & Ethical Considerations
 
-- **Long-tail weakness:** rare account codes are predicted least reliably (balanced accuracy
-  0.488). Do not rely on the model for unusual or low-frequency codes without review.
+- **Long-tail weakness:** rare account codes are predicted least reliably (mean recall
+  0.541 on the rarest quarter of classes). Do not rely on the model for unusual or low-frequency codes without review.
 - **Domain & locale bound:** trained for the French PCG and French-language transaction
   conventions; it does not transfer to other accounting standards or languages.
 - **Confidence is not calibration:** reported confidences are softmax-style scores, not
@@ -124,7 +125,7 @@ comparison.
   anything — smaller batches leave most classes empty and inflate the score.
   None of this replaces re-checking **balanced accuracy** (not just top-1) on freshly labeled
   recent data, or watching for changes in transaction-label vocabulary and entity naming.
-- **Retraining:** the model trains in seconds, so scheduled retraining on recent labeled data
+- **Retraining:** the model trains in about a minute on the default sample, so scheduled retraining on recent labeled data
   is cheap; pair it with the quality gate above. Re-evaluate on a fresh temporal split each time
   rather than reusing an old validation window.
 - **Reproduce:** `uv run python scripts/generate_sample_data.py` then `tc-train`; comparison via
