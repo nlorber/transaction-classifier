@@ -33,7 +33,18 @@ def test_round_cap_ends_training_when_the_best_round_is_within_patience(
     compare, best_round, stopped
 ):
     rounds = compare._rounds(best_round, round_cap=500, patience=40)
-    assert rounds == {"best_round": best_round, "round_cap": 500, "stopped_by_round_cap": stopped}
+    assert rounds == {
+        "best_round": best_round,
+        "round_cap": 500,
+        "stopped_by_round_cap": stopped,
+        "converged": not stopped,
+    }
+
+
+@pytest.mark.parametrize(("n_iter", "converged"), [(190, True), (4_999, True), (5_000, False)])
+def test_solver_converged_only_below_its_iteration_cap(compare, n_iter, converged):
+    iterations = compare._iterations(n_iter, iteration_cap=5_000)
+    assert iterations == {"iterations": n_iter, "iteration_cap": 5_000, "converged": converged}
 
 
 def test_default_runs_are_the_committed_comparison(compare):

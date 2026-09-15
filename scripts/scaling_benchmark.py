@@ -2,8 +2,10 @@
 
 Generates one synthetic dataset per grid cell (scripts/generate_sample_data.py), then trains
 logistic regression, XGBoost and LightGBM with balanced class weights on each through
-scripts/compare_models.py, one model per subprocess. A fit that runs past the time budget is
-killed and recorded as DNF. Results accumulate in reports/scaling_benchmark.json, and a rerun
+scripts/compare_models.py, one model per subprocess. Every model gets room to converge: the
+boosters up to MAX_ROUNDS rounds with early stopping on the validation block, logistic
+regression up to MAX_ITER solver iterations, and each result records whether it converged.
+A fit that runs past the time budget is killed and recorded as DNF. Results accumulate in reports/scaling_benchmark.json, and a rerun
 skips fits already recorded there, so an interrupted run resumes where it stopped.
 
 The grid varies one factor at a time around a shared centre: rows at 300 classes (volume)
@@ -12,7 +14,7 @@ classes grow.
 
 Usage:
     uv run python scripts/scaling_benchmark.py
-    uv run python scripts/scaling_benchmark.py --budget 7200 --cells centre,classes-1200
+    uv run python scripts/scaling_benchmark.py --budget 10800 --cells centre,classes-1200
 """
 
 import argparse
@@ -44,6 +46,11 @@ MODEL_NAMES = {
     "lgbm-balanced": "LightGBM",
 }
 RUN_PACKAGES = ("scikit-learn", "xgboost", "lightgbm")
+# Caps high enough that convergence, not the cap, ends training where the budget allows;
+# the budget fits MAX_ROUNDS XGBoost rounds on the largest cells.
+MAX_ROUNDS = 2000
+MAX_ITER = 5000
+DEFAULT_BUDGET_SECONDS = 10_800
 
 
 class Cell(NamedTuple):
@@ -122,7 +129,9 @@ def environment() -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the scaling benchmark grid.")
-    parser.add_argument("--budget", type=float, default=7200.0, help="seconds allowed per fit")
+    parser.add_argument(
+        "--budget", type=float, default=DEFAULT_BUDGET_SECONDS, help="seconds allowed per fit"
+    )
     parser.add_argument("--cells", default=",".join(cell.name for cell in CELLS))
     args = parser.parse_args(argv)
 
@@ -130,7 +139,15 @@ def main(argv: list[str] | None = None) -> None:
     report: dict[str, Any] = (
         json.loads(REPORT_PATH.read_text()) if REPORT_PATH.exists() else {"fits": []}
     )
-    report.update({"seed": SEED, "budget_seconds": args.budget, "environment": environment()})
+    report.update(
+        {
+            "seed": SEED,
+            "budget_seconds": args.budget,
+            "max_rounds": MAX_ROUNDS,
+            "max_iter": MAX_ITER,
+            "environment": environment(),
+        }
+    )
     done = {(fit["cell"], fit["run"]) for fit in report["fits"]}
 
     for cell in (cell for cell in CELLS if cell.name in wanted):
@@ -157,6 +174,10 @@ def main(argv: list[str] | None = None) -> None:
                     run,
                     "--output",
                     str(output),
+                    "--max-rounds",
+                    str(MAX_ROUNDS),
+                    "--max-iter",
+                    str(MAX_ITER),
                 ]
                 fit = run_fit(command, args.budget, output, cwd=ROOT)
             logger.info("  %s after %.0fs", fit["status"], fit["elapsed_seconds"])

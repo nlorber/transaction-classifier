@@ -60,3 +60,5 @@ def test_grid_matches_the_spec(bench):
         ("classes-1200", 1_200, 50_000),
     ]
     assert bench.RUNS == ("lr-balanced", "xgb-balanced", "lgbm-balanced")
+    assert (bench.MAX_ROUNDS, bench.MAX_ITER) == (2_000, 5_000)
+    assert bench.DEFAULT_BUDGET_SECONDS == 10_800

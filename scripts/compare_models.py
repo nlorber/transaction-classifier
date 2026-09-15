@@ -13,8 +13,10 @@ Usage:
     uv run python scripts/compare_models.py --data data/generated/x.csv --runs xgb-balanced --output /tmp/r.json
 
 Each result records the process's peak resident memory so far; run one model per process
-(as scripts/scaling_benchmark.py does) for a per-model figure. Booster results also record
-the best round and whether the round cap, rather than early stopping, ended training.
+(as scripts/scaling_benchmark.py does) for a per-model figure. Every result records whether
+the model converged: boosters their best round and whether the round cap, rather than early
+stopping, ended training; logistic regression its solver iterations against the iteration
+cap. --max-rounds and --max-iter raise those caps; without them the production settings apply.
 """
 
 import argparse
@@ -77,15 +79,27 @@ def _train_xgboost(
 
 LIGHTGBM_ROUNDS = 500
 LIGHTGBM_PATIENCE = 40
+LOGISTIC_MAX_ITER = 1000
 
 
 def _rounds(best_round: int, round_cap: int, patience: int) -> dict[str, object]:
     """Where a booster settled. Early stopping needs *patience* rounds past the best one,
     so a best round within patience of the cap means the cap ended training."""
+    stopped = best_round + patience > round_cap
     return {
         "best_round": best_round,
         "round_cap": round_cap,
-        "stopped_by_round_cap": best_round + patience > round_cap,
+        "stopped_by_round_cap": stopped,
+        "converged": not stopped,
+    }
+
+
+def _iterations(n_iter: int, iteration_cap: int) -> dict[str, object]:
+    """Solver iterations used; a solver that reaches its cap stopped before converging."""
+    return {
+        "iterations": n_iter,
+        "iteration_cap": iteration_cap,
+        "converged": n_iter < iteration_cap,
     }
 
 
@@ -97,12 +111,13 @@ def _train_lightgbm(
     X_test: spmatrix,
     n_classes: int,
     balanced: bool,
+    max_rounds: int,
 ) -> tuple[np.ndarray, float, dict[str, object]]:
     from lightgbm import LGBMClassifier, early_stopping
 
     t0 = time.time()
     model = LGBMClassifier(
-        n_estimators=LIGHTGBM_ROUNDS,
+        n_estimators=max_rounds,
         max_depth=6,
         learning_rate=0.05,
         subsample=0.7,
@@ -124,7 +139,7 @@ def _train_lightgbm(
     )
     elapsed = time.time() - t0
     # best_iteration_ counts from 1.
-    rounds = _rounds(model.best_iteration_, LIGHTGBM_ROUNDS, LIGHTGBM_PATIENCE)
+    rounds = _rounds(model.best_iteration_, max_rounds, LIGHTGBM_PATIENCE)
     return model.predict_proba(X_test), elapsed, rounds
 
 
@@ -133,6 +148,7 @@ def _train_logistic(
     y_train: np.ndarray,
     X_test: spmatrix,
     balanced: bool,
+    max_iter: int,
 ) -> tuple[np.ndarray, float, dict[str, object]]:
     t0 = time.time()
     # The matrix mixes TF-IDF weights in [0, 1] with raw amounts in the thousands.
@@ -142,7 +158,7 @@ def _train_logistic(
     model = make_pipeline(
         MaxAbsScaler(),
         LogisticRegression(
-            max_iter=1000,
+            max_iter=max_iter,
             solver="saga",
             class_weight="balanced" if balanced else None,
             random_state=42,
@@ -150,7 +166,8 @@ def _train_logistic(
     )
     model.fit(X_train, y_train)
     elapsed = time.time() - t0
-    return model.predict_proba(X_test), elapsed, {}
+    iterations = _iterations(int(model[-1].n_iter_.max()), max_iter)
+    return model.predict_proba(X_test), elapsed, iterations
 
 
 def _peak_rss_mb() -> float:
@@ -274,12 +291,29 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--data", default=settings.data_path, help="CSV to train and score on")
     parser.add_argument("--runs", type=parse_runs, default=parse_runs(DEFAULT_RUNS))
     parser.add_argument("--output", type=Path, default=Path("reports/model_comparison.json"))
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=None,
+        help="boosting round cap for XGBoost and LightGBM (default: production settings)",
+    )
+    parser.add_argument(
+        "--max-iter",
+        type=int,
+        default=LOGISTIC_MAX_ITER,
+        help="solver iteration cap for logistic regression",
+    )
     args = parser.parse_args(argv)
+    if args.max_rounds is not None:
+        settings.n_estimators = args.max_rounds
+    lightgbm_rounds = args.max_rounds or LIGHTGBM_ROUNDS
 
     m = build_matrices(settings, args.data)
     trainers = {
-        "lr": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, False),
-        "lr-balanced": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, True),
+        "lr": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, False, args.max_iter),
+        "lr-balanced": lambda: _train_logistic(
+            m.X_train, m.y_train, m.X_test, True, args.max_iter
+        ),
         "xgb": lambda: _train_xgboost(
             settings, m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, False
         ),
@@ -287,10 +321,10 @@ def main(argv: list[str] | None = None) -> None:
             settings, m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, True
         ),
         "lgbm": lambda: _train_lightgbm(
-            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), False
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), False, lightgbm_rounds
         ),
         "lgbm-balanced": lambda: _train_lightgbm(
-            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), True
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), True, lightgbm_rounds
         ),
     }
 
