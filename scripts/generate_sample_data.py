@@ -14,6 +14,7 @@ import csv
 import hashlib
 import random
 from datetime import date, timedelta
+from fractions import Fraction
 from functools import cache
 from itertools import accumulate
 from pathlib import Path
@@ -59,7 +60,7 @@ CALENDAR_RULES: dict[str, tuple[tuple[int, ...] | None, int, int | None]] = {
     "645000": (None, 5, 15),
     "646000": (None, 5, 15),
     # VAT returns: days 17-24 of the month after each quarter.
-    "445660": ((1, 4, 7, 10), 17, 24),
+    "445510": ((1, 4, 7, 10), 17, 24),
     "445710": ((1, 4, 7, 10), 17, 24),
     # Corporate tax instalments: days 10-20 of each quarter's last month.
     "691000": ((3, 6, 9, 12), 10, 20),
@@ -139,7 +140,7 @@ ACCOUNT_CODES: dict[str, int] = {
     "421000": 74,
     "431000": 68,
     "437000": 62,
-    "445660": 56,
+    "445510": 56,
     "445710": 49,
     "467000": 43,
     "471000": 37,
@@ -324,10 +325,10 @@ TEMPLATES: dict[str, list[TemplateSpec]] = {
         ),
     ],
     # --- 445xxx: Tax (TVA / IS) ---
-    "445660": [
+    "445510": [
         (
             "VIR SEPA DGFIP TVA",
-            "VIR SEPA NPY:DGFIP LIB:TVA DEDUCTIBLE {quarter} {year}",
+            "VIR SEPA NPY:DGFIP LIB:TVA A DECAISSER {quarter} {year}",
             True,
             (1000, 20000),
         ),
@@ -745,18 +746,95 @@ TEMPLATES: dict[str, list[TemplateSpec]] = {
     ],
 }
 
-# Accounts that share wording and differ only by amount: the same equipment
-# purchase is expensed below the EUR 500 capitalisation threshold and capitalised
-# from it, and a loan instalment splits into capital (164000) and interest.
+# Accounts that share wording and differ only by amount: the same equipment purchase is
+# expensed below the EUR 500 capitalisation threshold and capitalised from it. The
+# threshold applies to the amount before VAT, and the drawn amount includes 20% VAT.
 AMOUNT_DECIDED_TEMPLATES: dict[str, list[TemplateSpec]] = {
-    "606300": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (10, 499.99))],
-    "218000": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (500, 15000))],
-    "661000": [
-        ("PRLV SEPA ECHEANCE EMPRUNT", "PRLV SEPA LIB:ECHEANCE EMPRUNT {ref8}", True, (20, 800))
-    ],
+    "606300": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (10, 599.99))],
+    "218000": [("CB {entity}", "CB {entity} LIB:ACHAT MATERIEL", True, (600, 18000))],
 }
 for _code, _variants in AMOUNT_DECIDED_TEMPLATES.items():
     TEMPLATES[_code].extend(_variants)
+
+
+# ---------------------------------------------------------------------------
+# Split bank lines: one bank transaction booked directly from the statement
+# produces one journal line per non-bank account.
+# ---------------------------------------------------------------------------
+
+
+class SplitLine(NamedTuple):
+    account: str | None  # None: the transaction's primary account
+    share: Fraction  # share of the drawn amount, rounded half up to the cent
+    is_debit: bool | None  # None: the template's direction
+    residual: bool = False  # the drawn amount minus the other lines instead of a share
+
+
+SINGLE_LINE = (SplitLine(None, Fraction(1), None),)
+
+SPLITS: dict[str, tuple[SplitLine, ...]] = {
+    # Purchase with deductible VAT at the 20% standard rate: VAT is 1/6 of the amount
+    # paid (PCG 44566 VAT on other goods and services).
+    "vat": (
+        SplitLine(None, Fraction(5, 6), None, residual=True),
+        SplitLine("445660", Fraction(1, 6), None),
+    ),
+    # Capitalised equipment: VAT on fixed assets (PCG 44562).
+    "vat_fixed_asset": (
+        SplitLine(None, Fraction(5, 6), None, residual=True),
+        SplitLine("445620", Fraction(1, 6), None),
+    ),
+    # Card remittance: the gross amount leaves cards to collect (PCG 5115) and the
+    # acquirer's commission, VAT-exempt, is a bank service (PCG 627).
+    "card": (
+        SplitLine(None, Fraction(1), False),
+        SplitLine("627000", Fraction(1, 100), True),
+    ),
+    # Loan instalment: capital (PCG 164), interest (PCG 6611), borrower insurance (PCG 616).
+    "loan": (
+        SplitLine(None, Fraction(80, 100), None, residual=True),
+        SplitLine("661100", Fraction(18, 100), None),
+        SplitLine("616000", Fraction(2, 100), None),
+    ),
+}
+
+# Expense accounts paid directly from the bank that carry deductible VAT. Excluded:
+# banking and financial charges and insurance (VAT-exempt, CGI art. 261 C), salaries,
+# social charges and taxes (outside VAT), postage mixed with telecom (626000).
+VAT_DIRECT_PURCHASES = frozenset(
+    {
+        "601100", "602000", "604000", "606100", "606300", "611000", "612000",
+        "613200", "614000", "615000", "618000", "621000", "622000", "623000",
+        "624000", "625100", "625200", "626100", "651000",
+    }
+)  # fmt: skip
+
+_OTHER_SPLITS = {"218000": "vat_fixed_asset", "511500": "card", "164000": "loan"}
+
+
+def split_kind(account_code: str) -> str | None:
+    """The split a transaction of this primary account books, if any."""
+    if account_code in VAT_DIRECT_PURCHASES:
+        return "vat"
+    return _OTHER_SPLITS.get(account_code)
+
+
+def split_specs(kind: str | None) -> tuple[SplitLine, ...]:
+    return SINGLE_LINE if kind is None else SPLITS[kind]
+
+
+def share_cents(cents: int, share: Fraction) -> int:
+    """cents × share, rounded half up to the cent."""
+    return (2 * cents * share.numerator + share.denominator) // (2 * share.denominator)
+
+
+def line_amounts(kind: str | None, cents: int) -> list[int]:
+    """Each line's amount for a drawn amount; the residual line absorbs rounding."""
+    specs = split_specs(kind)
+    shares = [share_cents(cents, line.share) for line in specs]
+    pairs = list(zip(shares, specs, strict=True))
+    rest = cents - sum(amount for amount, line in pairs if not line.residual)
+    return [rest if line.residual else amount for amount, line in pairs]
 
 
 # ---------------------------------------------------------------------------
@@ -880,12 +958,16 @@ def sub_account_codes(n_classes: int) -> list[str]:
 @cache
 def general_codes() -> frozenset[str]:
     """Every account code the general catalogue can put in the output."""
-    return frozenset(ACCOUNT_CODES)
+    return frozenset(
+        line.account or primary
+        for primary in ACCOUNT_CODES
+        for line in split_specs(split_kind(primary))
+    )
 
 
 def lines_per_transaction(account_code: str) -> int:
     """Journal lines one transaction of this primary account books."""
-    return 1
+    return len(split_specs(split_kind(account_code)))
 
 
 def transaction_floor(account_code: str) -> int:
@@ -1148,6 +1230,19 @@ class Transaction(NamedTuple):
     lines: tuple[Line, ...]
 
 
+def split_lines(
+    rng: random.Random, primary: str, is_debit: bool, cents: int, posting_date: date
+) -> tuple[Line, ...]:
+    """Book a transaction's journal lines; only the primary line can land on a sibling."""
+    kind = split_kind(primary)
+    lines = []
+    for spec, amount in zip(split_specs(kind), line_amounts(kind, cents), strict=True):
+        account = spec.account or recorded_account(rng, primary)
+        side = is_debit if spec.is_debit is None else spec.is_debit
+        lines.append(Line(account, amount, side))
+    return tuple(lines)
+
+
 def generate(n_classes: int, n_rows: int, seed: int) -> list[Transaction]:
     """Book a company's bank journal with exactly *n_classes* account codes."""
     rng = random.Random(seed)
@@ -1171,7 +1266,7 @@ def generate(n_classes: int, n_rows: int, seed: int) -> list[Transaction]:
                 remarks = format_comment_html(fill_template(rng, remarks_pattern, entity, tx_date))
             reference = f"REF{rng.randint(100000, 999999)}" if rng.random() < 0.15 else ""
 
-            lines = (Line(recorded_account(rng, primary), cents, is_debit),)
+            lines = split_lines(rng, primary, is_debit, cents, tx_date)
             transactions.append(
                 Transaction(primary, cents, tx_date, description, remarks, reference, lines)
             )

@@ -100,3 +100,46 @@ def test_each_sub_account_books_one_distinct_counterparty(gen):
     pools = [gen.entity_pool(code) for code in codes]
     assert all(len(pool) == 1 for pool in pools)
     assert len({pool[0] for pool in pools}) == len(codes)
+
+
+@pytest.mark.parametrize(
+    ("kind", "cents", "expected"),
+    [
+        (None, 4_321, [4_321]),
+        ("vat", 12_000, [10_000, 2_000]),
+        ("vat", 1_001, [834, 167]),
+        ("vat_fixed_asset", 60_000, [50_000, 10_000]),
+        ("card", 5_000, [5_000, 50]),
+        ("loan", 100_000, [80_000, 18_000, 2_000]),
+        ("loan", 50_001, [40_001, 9_000, 1_000]),
+    ],
+)
+def test_line_amounts(gen, kind, cents, expected):
+    assert gen.line_amounts(kind, cents) == expected
+
+
+def test_each_split_has_at_most_one_residual_line(gen):
+    for specs in gen.SPLITS.values():
+        assert sum(line.residual for line in specs) <= 1
+
+
+def test_vat_purchases_are_catalogue_accounts(gen):
+    assert set(gen.ACCOUNT_CODES) >= gen.VAT_DIRECT_PURCHASES
+
+
+def test_split_lines_follow_their_template(gen, small):
+    for transaction in small:
+        kind = gen.split_kind(transaction.primary)
+        assert [line.cents for line in transaction.lines] == gen.line_amounts(
+            kind, transaction.cents
+        )
+        assert all(line.cents > 0 for line in transaction.lines)
+        if kind in ("vat", "vat_fixed_asset", "loan"):
+            assert sum(line.cents for line in transaction.lines) == transaction.cents
+
+
+def test_capitalisation_threshold_applies_to_the_amount_before_vat(gen):
+    [(*_, (_, expensed_max))] = gen.AMOUNT_DECIDED_TEMPLATES["606300"]
+    [(*_, (capitalised_min, _))] = gen.AMOUNT_DECIDED_TEMPLATES["218000"]
+    assert gen.line_amounts("vat", round(expensed_max * 100))[0] < 50_000
+    assert gen.line_amounts("vat_fixed_asset", round(capitalised_min * 100))[0] >= 50_000
