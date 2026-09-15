@@ -1,19 +1,22 @@
 """Bayes-optimal accuracy ceiling for the synthetic sample data.
 
-scripts/generate_sample_data.py draws each row's true account code first, then a
-template, a counterparty, a posting date and an amount. It passes the
-description through a bank-label channel (prefix variant, an occasional dropped
-character, truncation) and records the code, occasionally as a sibling account.
-No classifier can beat the Bayes rule under that process: predict the recorded
-code with the highest posterior given the row. This script evaluates that
-posterior exactly for every row of the held-out test block (same rows, split
-and class filter as training) and scores it there, so the result sits directly
-next to the model's own test-block metrics.
+scripts/generate_sample_data.py allocates transactions to primary accounts, then for each
+draws a template, a counterparty, a posting date and an amount in cents. It passes the
+description through a bank-label channel (prefix variant, an occasional dropped character,
+truncation) and writes one row per journal line: a split template's rows share every text
+field and the date, each with its own account and amount. A line's account can depend on
+the posting date (the 2025 chart-of-accounts reform), and the primary line is occasionally
+recorded under a sibling account.
 
-Observable per row: description, remarks, amount, debit/credit side and posting
-date. The reference column and the random tokens inside the remarks (bank
-references, cheque and invoice numbers) are drawn independently of the account
-code, so they carry no signal beyond their format.
+No classifier can beat the Bayes rule under that process: predict the recorded code with the
+highest posterior given the row. This script evaluates that posterior exactly for every row of
+the held-out test block of the committed default sample, so the result sits directly next to
+the model's own test-block metrics.
+
+Observable per row: description, remarks, the line's amount and side, and the posting date.
+The reference column and the random tokens inside the remarks (bank references, cheque and
+invoice numbers) are drawn independently of the account, so they carry no signal beyond their
+format.
 
 Usage:
     uv run python scripts/estimate_ceiling.py
@@ -22,8 +25,10 @@ Usage:
 import importlib.util
 import json
 import logging
+import math
 import re
 from collections import defaultdict
+from datetime import date
 from functools import cache
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -51,21 +56,28 @@ DescriptionTable = dict[str, dict[tuple[str | None, int | None], float]]
 class Observed(NamedTuple):
     description: str
     remarks: str
-    amount: float
+    cents: int
     is_debit: bool
-    posting_date: Any
+    posting_date: date
 
 
-class CompiledTemplate(NamedTuple):
+class Emitter(NamedTuple):
+    """One journal line of one template of one primary account."""
+
+    primary: str
+    account: str
+    kind: str | None
+    line_index: int
     is_debit: bool
-    low: float
+    low_cents: int
+    high_cents: int
     high: float
     descriptions: DescriptionTable
     remarks: re.Pattern[str] | None
     remarks_token_p: float
     counterparty_p: dict[str, float]
-    date_p: dict[Any, float]
-    choice_p: float
+    date_p: dict[date, float]
+    weight: float  # transactions of the primary account × P(template)
 
 
 def load_generator() -> Any:
@@ -135,8 +147,9 @@ def _description_table(gen: Any, pattern: str, pool: tuple[str, ...]) -> Descrip
     return {label: dict(fills) for label, fills in table.items()}
 
 
-def compile_templates(gen: Any) -> dict[str, list[CompiledTemplate]]:
-    entities = {name for code in gen.ACCOUNT_CODES for name in gen.entity_pool(code)}
+def compile_emitters(gen: Any, n_classes: int, n_rows: int) -> list[Emitter]:
+    counts = gen.transaction_counts(n_classes, n_rows)
+    entities = {name for code in counts for name in gen.entity_pool(code)}
     token_patterns = {
         "entity": "|".join(re.escape(name) for name in sorted(entities, key=len, reverse=True)),
         "iban": r"[A-Z]{2}\d+",
@@ -148,50 +161,79 @@ def compile_templates(gen: Any) -> dict[str, list[CompiledTemplate]]:
         "year": r"\d{4}",
         **{name: regex for name, (regex, _) in RANDOM_TOKENS.items()},
     }
-    compiled: dict[str, list[CompiledTemplate]] = {}
-    for code in gen.ACCOUNT_CODES:
-        variants = gen.TEMPLATES[code]
-        counterparty_p = gen.entity_weights(code)
-        compiled[code] = [
-            CompiledTemplate(
-                is_debit=is_debit,
-                low=float(low),
-                high=float(high),
-                descriptions=_description_table(gen, description, tuple(counterparty_p)),
-                remarks=(
-                    None
-                    if remarks is None
-                    else _compile(gen.format_comment_html(remarks), token_patterns)
-                ),
-                remarks_token_p=_token_probability(remarks or ""),
-                counterparty_p=counterparty_p,
-                date_p=gen.date_distribution(code),
-                choice_p=1 / len(variants),
+    emitters: list[Emitter] = []
+    for primary, count in counts.items():
+        templates = gen.templates_for(primary)
+        kind = gen.split_kind(primary)
+        counterparty_p = gen.entity_weights(primary)
+        for description, remarks, is_debit, (low, high) in templates:
+            descriptions = _description_table(gen, description, tuple(counterparty_p))
+            compiled = (
+                None
+                if remarks is None
+                else _compile(gen.format_comment_html(remarks), token_patterns)
             )
-            for description, remarks, is_debit, (low, high) in variants
-        ]
-    return compiled
+            for index, line in enumerate(gen.split_specs(kind)):
+                emitters.append(
+                    Emitter(
+                        primary=primary,
+                        account=line.account or primary,
+                        kind=kind,
+                        line_index=index,
+                        is_debit=is_debit if line.is_debit is None else line.is_debit,
+                        low_cents=round(low * 100),
+                        high_cents=round(high * 100),
+                        high=float(high),
+                        descriptions=descriptions,
+                        remarks=compiled,
+                        remarks_token_p=_token_probability(remarks or ""),
+                        counterparty_p=counterparty_p,
+                        date_p=gen.date_distribution(primary),
+                        weight=count / len(templates),
+                    )
+                )
+    return emitters
 
 
 @cache
-def _round_amount_pmf(low: float, high: float, magnitudes: tuple[int, ...]) -> dict[float, float]:
-    """P(amount) under the round branch of generate_amount, clipping included."""
-    pmf: dict[float, float] = {}
+def _round_amount_pmf(
+    low_cents: int, high_cents: int, high: float, magnitudes: tuple[int, ...]
+) -> dict[int, float]:
+    """P(drawn cents) under the round branch of generate_amount_cents, clipping included."""
+    pmf: defaultdict[int, float] = defaultdict(float)
     for magnitude in magnitudes:
         k_max = max(1, int(high / magnitude))
-        values = np.clip(magnitude * np.arange(1, k_max + 1), low, high)
-        for value, count in zip(*np.unique(values, return_counts=True), strict=True):
-            key = round(float(value), 2)
-            pmf[key] = pmf.get(key, 0.0) + count / k_max / len(magnitudes)
-    return pmf
+        for k in range(1, k_max + 1):
+            value = min(high_cents, max(low_cents, magnitude * k * 100))
+            pmf[value] += 1 / k_max / len(magnitudes)
+    return dict(pmf)
 
 
-def amount_probability(amount: float, low: float, high: float, gen: Any) -> float:
-    """P(amount | template): a clipped round multiple, else a uniform draw rounded to cents."""
-    cent_overlap = min(high, amount + 0.005) - max(low, amount - 0.005)
-    uniform = max(cent_overlap, 0.0) / (high - low)
-    rounded = _round_amount_pmf(low, high, tuple(gen.ROUND_MAGNITUDES)).get(round(amount, 2), 0.0)
+def drawn_probability(cents: int, emitter: Emitter, gen: Any) -> float:
+    """P(drawn amount = cents | template): a clipped round multiple, else a uniform cent."""
+    in_range = emitter.low_cents <= cents <= emitter.high_cents
+    uniform = 1 / (emitter.high_cents - emitter.low_cents + 1) if in_range else 0.0
+    rounded = _round_amount_pmf(
+        emitter.low_cents, emitter.high_cents, emitter.high, tuple(gen.ROUND_MAGNITUDES)
+    ).get(cents, 0.0)
     return (1 - gen.ROUND_AMOUNT_RATE) * uniform + gen.ROUND_AMOUNT_RATE * rounded
+
+
+def line_probability(cents: int, emitter: Emitter, gen: Any) -> float:
+    """P(this line's amount = cents | emitter), summed over the drawn amounts that book it."""
+    specs = gen.split_specs(emitter.kind)
+    if len(specs) == 1:
+        return drawn_probability(cents, emitter, gen)
+    share = specs[emitter.line_index].share
+    # Every line lies within len(specs) / 2 cents of drawn × share, so the drawn amount
+    # lies in this window.
+    first = max(emitter.low_cents, math.floor((cents - len(specs)) / share))
+    last = min(emitter.high_cents, math.ceil((cents + len(specs)) / share))
+    return sum(
+        drawn_probability(drawn, emitter, gen)
+        for drawn in range(first, last + 1)
+        if gen.line_amounts(emitter.kind, drawn)[emitter.line_index] == cents
+    )
 
 
 def _consistent(groups: dict[str, str], row: Observed, gen: Any) -> bool:
@@ -209,24 +251,23 @@ def _consistent(groups: dict[str, str], row: Observed, gen: Any) -> bool:
     return all(groups[name] == value for name, value in derived.items() if name in groups)
 
 
-def likelihood(row: Observed, template: CompiledTemplate, gen: Any) -> float:
-    """P(row | true code, template), omitting the reference column every code shares."""
-    if row.is_debit != template.is_debit:
+def likelihood(row: Observed, emitter: Emitter, gen: Any) -> float:
+    """P(row | emitter), omitting the reference column every emitter shares."""
+    if row.is_debit != emitter.is_debit:
         return 0.0
-    p = amount_probability(row.amount, template.low, template.high, gen)
-    p *= template.date_p.get(row.posting_date.date(), 0.0)
-    fills = template.descriptions.get(row.description)
+    fills = emitter.descriptions.get(row.description)
+    p = emitter.date_p.get(row.posting_date, 0.0)
     if p == 0.0 or not fills:
         return 0.0
 
     remarks_entity = None
     if not row.remarks:
-        p *= 1.0 if template.remarks is None else 1 - gen.REMARKS_RATE
+        p *= 1.0 if emitter.remarks is None else 1 - gen.REMARKS_RATE
     else:
-        remarks = template.remarks.fullmatch(row.remarks) if template.remarks else None
+        remarks = emitter.remarks.fullmatch(row.remarks) if emitter.remarks else None
         if remarks is None or not _consistent(remarks.groupdict(), row, gen):
             return 0.0
-        p *= gen.REMARKS_RATE * template.remarks_token_p
+        p *= gen.REMARKS_RATE * emitter.remarks_token_p
         remarks_entity = remarks.groupdict().get("entity")
 
     # One drawn counterparty fills both fields, and the description's month is the
@@ -238,9 +279,11 @@ def likelihood(row: Observed, template: CompiledTemplate, gen: Any) -> float:
         if entity is not None and remarks_entity is not None and entity != remarks_entity:
             continue
         drawn = entity if entity is not None else remarks_entity
-        drawn_p = 1.0 if drawn is None else template.counterparty_p.get(drawn, 0.0)
+        drawn_p = 1.0 if drawn is None else emitter.counterparty_p.get(drawn, 0.0)
         fill_p += description_p * drawn_p
-    return p * fill_p * template.choice_p
+    if fill_p == 0.0:
+        return 0.0
+    return p * fill_p * line_probability(row.cents, emitter, gen)
 
 
 def label_noise_matrix(gen: Any, codes: list[str]) -> np.ndarray:
@@ -261,32 +304,27 @@ def topk_credit(scores: np.ndarray, true_idx: int, k: int) -> float:
     return float(np.clip((k - higher) / tied, 0.0, 1.0))
 
 
-def main() -> None:
-    from transaction_classifier.core.config import Settings
-    from transaction_classifier.core.data.loader import read_csv_data
+def compute_ceiling(
+    gen: Any,
+    df: Any,
+    n_classes: int,
+    n_rows: int,
+    train_ratio: float,
+    val_ratio: float,
+) -> dict[str, object]:
+    """Score the Bayes classifier on the held-out test block of a generated sample."""
     from transaction_classifier.core.data.splitter import split_by_date
 
-    settings = Settings()
-    if settings.target_length != 6:
-        raise SystemExit("The ceiling is defined over the generator's 6-digit account codes.")
-
-    gen = load_generator()
-    codes = list(gen.ACCOUNT_CODES)
-    total = sum(gen.ACCOUNT_CODES.values())
-    prior = np.array([gen.ACCOUNT_CODES[code] / total for code in codes])
-    noise = label_noise_matrix(gen, codes)
-    templates = compile_templates(gen)
-
-    df = read_csv_data(
-        settings.data_path,
-        target_length=settings.target_length,
-        min_class_samples=settings.min_class_samples,
-    )
-    train_df, _, test_df = split_by_date(
-        df, train_ratio=settings.train_ratio, val_ratio=settings.val_ratio
-    )
+    train_df, _, test_df = split_by_date(df, train_ratio=train_ratio, val_ratio=val_ratio)
     test_df = test_df[test_df["target"].isin(set(train_df["target"]))]
-    logger.info("Scoring the Bayes classifier on %d test-block rows ...", len(test_df))
+
+    codes = sorted(gen.general_codes() | set(gen.sub_account_codes(n_classes)))
+    index = {code: i for i, code in enumerate(codes)}
+    noise = label_noise_matrix(gen, codes)
+    by_description: defaultdict[str, list[Emitter]] = defaultdict(list)
+    for emitter in compile_emitters(gen, n_classes, n_rows):
+        for label in emitter.descriptions:
+            by_description[label].append(emitter)
 
     topk_hits: dict[int, list[float]] = {k: [] for k in TOP_K}
     expected_top1: list[float] = []
@@ -295,16 +333,19 @@ def main() -> None:
         row = Observed(
             description=record.description,
             remarks=record.remarks,
-            amount=float(record.debit or record.credit),
+            cents=round((record.debit or record.credit) * 100),
             is_debit=record.debit > 0,
-            posting_date=record.posting_date,
+            posting_date=record.posting_date.date(),
         )
-        true_code_scores = prior * np.array(
-            [sum(likelihood(row, template, gen) for template in templates[code]) for code in codes]
-        )
+        true_scores = np.zeros(len(codes))
+        for emitter in by_description.get(row.description, []):
+            p = likelihood(row, emitter, gen)
+            if p:
+                account = gen.booked_account(emitter.account, row.posting_date)
+                true_scores[index[account]] += emitter.weight * p
         # Score recorded codes: a row of true code c is recorded as l with noise[c, l].
-        scores = true_code_scores @ noise
-        true_idx = codes.index(record.target)
+        scores = true_scores @ noise
+        true_idx = index[record.target]
         if scores[true_idx] == 0.0:
             unexplained += 1
             continue
@@ -312,17 +353,53 @@ def main() -> None:
             topk_hits[k].append(topk_credit(scores, true_idx, k))
         expected_top1.append(float(scores.max() / scores.sum()))
 
-    # Every real row was generated by some code and recorded under this one, so a zero
+    # Every real row was generated by some emitter and recorded under this code, so a zero
     # score means this model of the generator has drifted from generate_sample_data.py.
     if unexplained:
-        raise SystemExit(f"{unexplained} rows have zero likelihood under their recorded code.")
+        raise ValueError(f"{unexplained} rows have zero likelihood under their recorded code.")
 
-    result: dict[str, object] = {
+    return {
         "evaluated_on": "held-out temporal test block",
         "rows": len(expected_top1),
         **{f"bayes_top{k}_accuracy": round(float(np.mean(topk_hits[k])), 4) for k in TOP_K},
         "expected_bayes_top1_accuracy": round(float(np.mean(expected_top1)), 4),
     }
+
+
+def main() -> None:
+    from transaction_classifier.core.config import Settings
+    from transaction_classifier.core.data.loader import read_csv_data
+
+    settings = Settings()
+    if settings.target_length != 6:
+        raise SystemExit("The ceiling is defined over the generator's 6-digit account codes.")
+
+    gen = load_generator()
+    df = read_csv_data(
+        settings.data_path,
+        target_length=settings.target_length,
+        min_class_samples=settings.min_class_samples,
+    )
+    counts = gen.transaction_counts(gen.DEFAULT_CLASSES, gen.DEFAULT_ROWS)
+    expected_rows = sum(n * gen.lines_per_transaction(code) for code, n in counts.items())
+    if df["account_code"].nunique() != gen.DEFAULT_CLASSES or len(df) != expected_rows:
+        raise SystemExit(
+            "The ceiling is defined for the default sample: run "
+            "scripts/generate_sample_data.py with no arguments first."
+        )
+
+    logger.info("Scoring the Bayes classifier on the test block of %s ...", settings.data_path)
+    try:
+        result = compute_ceiling(
+            gen,
+            df,
+            gen.DEFAULT_CLASSES,
+            gen.DEFAULT_ROWS,
+            settings.train_ratio,
+            settings.val_ratio,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     logger.info("%s", result)
 
     out_path = Path("reports/ceiling.json")
