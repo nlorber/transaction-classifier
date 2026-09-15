@@ -10,13 +10,21 @@ and training time.
 
 Usage:
     uv run python scripts/compare_models.py
+    uv run python scripts/compare_models.py --data data/generated/x.csv --runs xgb-balanced --output /tmp/r.json
+
+Each result records the process's peak resident memory so far; run one model per process
+(as scripts/scaling_benchmark.py does) for a per-model figure. Booster results also record
+the best round and whether the round cap, rather than early stopping, ended training.
 """
 
+import argparse
 import json
 import logging
+import resource
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.sparse import spmatrix
@@ -43,7 +51,7 @@ def _train_xgboost(
     y_val: np.ndarray,
     X_test: spmatrix,
     balanced: bool,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, dict[str, object]]:
     from transaction_classifier.core.models.xgboost_model import XGBoostModel
 
     t0 = time.time()
@@ -60,7 +68,25 @@ def _train_xgboost(
     weights = compute_sample_weight("balanced", y_train) if balanced else None
     model.fit(X_train, y_train, X_val=X_val, y_val=y_val, sample_weight=weights)
     elapsed = time.time() - t0
-    return model.predict_proba(X_test), elapsed
+    # best_iteration counts from 0 and is absent when early stopping never ran.
+    best = model.model.get_booster().attr("best_iteration")
+    best_round = int(best) + 1 if best is not None else settings.n_estimators
+    rounds = _rounds(best_round, settings.n_estimators, settings.patience or 0)
+    return model.predict_proba(X_test), elapsed, rounds
+
+
+LIGHTGBM_ROUNDS = 500
+LIGHTGBM_PATIENCE = 40
+
+
+def _rounds(best_round: int, round_cap: int, patience: int) -> dict[str, object]:
+    """Where a booster settled. Early stopping needs *patience* rounds past the best one,
+    so a best round within patience of the cap means the cap ended training."""
+    return {
+        "best_round": best_round,
+        "round_cap": round_cap,
+        "stopped_by_round_cap": best_round + patience > round_cap,
+    }
 
 
 def _train_lightgbm(
@@ -70,12 +96,13 @@ def _train_lightgbm(
     y_val: np.ndarray,
     X_test: spmatrix,
     n_classes: int,
-) -> tuple[np.ndarray, float]:
+    balanced: bool,
+) -> tuple[np.ndarray, float, dict[str, object]]:
     from lightgbm import LGBMClassifier, early_stopping
 
     t0 = time.time()
     model = LGBMClassifier(
-        n_estimators=500,
+        n_estimators=LIGHTGBM_ROUNDS,
         max_depth=6,
         learning_rate=0.05,
         subsample=0.7,
@@ -84,6 +111,7 @@ def _train_lightgbm(
         min_child_weight=10,
         num_class=n_classes,
         objective="multiclass",
+        class_weight="balanced" if balanced else None,
         random_state=42,
         n_jobs=-1,
         verbose=-1,
@@ -92,10 +120,12 @@ def _train_lightgbm(
         X_train,
         y_train,
         eval_set=[(X_val, y_val)],
-        callbacks=[early_stopping(stopping_rounds=40, verbose=False)],
+        callbacks=[early_stopping(stopping_rounds=LIGHTGBM_PATIENCE, verbose=False)],
     )
     elapsed = time.time() - t0
-    return model.predict_proba(X_test), elapsed
+    # best_iteration_ counts from 1.
+    rounds = _rounds(model.best_iteration_, LIGHTGBM_ROUNDS, LIGHTGBM_PATIENCE)
+    return model.predict_proba(X_test), elapsed, rounds
 
 
 def _train_logistic(
@@ -103,7 +133,7 @@ def _train_logistic(
     y_train: np.ndarray,
     X_test: spmatrix,
     balanced: bool,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, dict[str, object]]:
     t0 = time.time()
     # The matrix mixes TF-IDF weights in [0, 1] with raw amounts in the thousands.
     # saga's step size shrinks with the largest row norm, so unscaled it makes
@@ -120,7 +150,13 @@ def _train_logistic(
     )
     model.fit(X_train, y_train)
     elapsed = time.time() - t0
-    return model.predict_proba(X_test), elapsed
+    return model.predict_proba(X_test), elapsed, {}
+
+
+def _peak_rss_mb() -> float:
+    """Peak resident memory of this process so far (ru_maxrss is bytes on macOS, KiB on Linux)."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / 2**20 if sys.platform == "darwin" else peak / 2**10, 1)
 
 
 def _score(
@@ -141,22 +177,52 @@ def _score(
         "balanced_accuracy": round(float(balanced_accuracy_score(y_test, pred)), 4),
         "f1_weighted": round(float(f1_score(y_test, pred, average="weighted")), 4),
         "train_seconds": round(elapsed, 1),
+        "peak_rss_mb": _peak_rss_mb(),
     }
 
 
-def main() -> None:
-    from transaction_classifier.core.config import Settings
+RUN_LABELS: dict[str, tuple[str, str]] = {
+    "lr": ("Logistic Regression", "none"),
+    "lr-balanced": ("Logistic Regression", "balanced"),
+    "xgb": ("XGBoost", "none"),
+    "xgb-balanced": ("XGBoost", "balanced"),
+    "lgbm": ("LightGBM", "none"),
+    "lgbm-balanced": ("LightGBM", "balanced"),
+}
+DEFAULT_RUNS = "lr,lr-balanced,xgb,xgb-balanced,lgbm"
+
+
+def parse_runs(value: str) -> list[str]:
+    runs = [run.strip() for run in value.split(",") if run.strip()]
+    unknown = [run for run in runs if run not in RUN_LABELS]
+    if unknown or not runs:
+        raise argparse.ArgumentTypeError(
+            f"unknown runs {unknown}; choose from {', '.join(RUN_LABELS)}"
+        )
+    return runs
+
+
+class Matrices(NamedTuple):
+    X_train: spmatrix
+    y_train: np.ndarray
+    X_val: spmatrix
+    y_val: np.ndarray
+    X_test: spmatrix
+    y_test: np.ndarray
+    labels: np.ndarray
+
+
+def build_matrices(settings: Any, data_path: str) -> Matrices:
+    """Feature matrices on the production temporal split and class filter."""
     from transaction_classifier.core.data.loader import read_csv_data
     from transaction_classifier.core.data.splitter import split_by_date
     from transaction_classifier.core.features.engine import DomainFeatureEngine
     from transaction_classifier.core.features.pipeline import assemble_feature_matrix
     from transaction_classifier.core.features.text import TfidfFeatureExtractor
 
-    settings = Settings()
-    data_path = Path(settings.data_path)
     logger.info("Loading data from %s ...", data_path)
     df = read_csv_data(
-        str(data_path),
+        data_path,
         target_length=settings.target_length,
         min_class_samples=settings.min_class_samples,
     )
@@ -169,8 +235,6 @@ def main() -> None:
     y_train = le.fit_transform(train_df["target"])
     val_df = val_df[val_df["target"].isin(le.classes_)]
     test_df = test_df[test_df["target"].isin(le.classes_)]
-    y_val = le.transform(val_df["target"])
-    y_test = le.transform(test_df["target"])
     labels = np.arange(len(le.classes_))
     logger.info(
         "Train: %d | Val: %d | Test: %d | Classes: %d\n",
@@ -191,36 +255,52 @@ def main() -> None:
     X_val = assemble_feature_matrix(val_df, extractor, engine, fit=False)
     X_test = assemble_feature_matrix(test_df, extractor, engine, fit=False)
     logger.info("Feature shape: %s\n", X_train.shape)
+    return Matrices(
+        X_train,
+        y_train,
+        X_val,
+        le.transform(val_df["target"]),
+        X_test,
+        le.transform(test_df["target"]),
+        labels,
+    )
 
-    runs = [
-        ("Logistic Regression", "none", lambda: _train_logistic(X_train, y_train, X_test, False)),
-        (
-            "Logistic Regression",
-            "balanced",
-            lambda: _train_logistic(X_train, y_train, X_test, True),
+
+def main(argv: list[str] | None = None) -> None:
+    from transaction_classifier.core.config import Settings
+
+    settings = Settings()
+    parser = argparse.ArgumentParser(description="Compare models on one dataset.")
+    parser.add_argument("--data", default=settings.data_path, help="CSV to train and score on")
+    parser.add_argument("--runs", type=parse_runs, default=parse_runs(DEFAULT_RUNS))
+    parser.add_argument("--output", type=Path, default=Path("reports/model_comparison.json"))
+    args = parser.parse_args(argv)
+
+    m = build_matrices(settings, args.data)
+    trainers = {
+        "lr": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, False),
+        "lr-balanced": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, True),
+        "xgb": lambda: _train_xgboost(
+            settings, m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, False
         ),
-        (
-            "XGBoost",
-            "none",
-            lambda: _train_xgboost(settings, X_train, y_train, X_val, y_val, X_test, False),
+        "xgb-balanced": lambda: _train_xgboost(
+            settings, m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, True
         ),
-        (
-            "XGBoost",
-            "balanced",
-            lambda: _train_xgboost(settings, X_train, y_train, X_val, y_val, X_test, True),
+        "lgbm": lambda: _train_lightgbm(
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), False
         ),
-        (
-            "LightGBM",
-            "none",
-            lambda: _train_lightgbm(X_train, y_train, X_val, y_val, X_test, len(labels)),
+        "lgbm-balanced": lambda: _train_lightgbm(
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, len(m.labels), True
         ),
-    ]
+    }
 
     results: list[dict[str, object]] = []
-    for model_name, class_weights, train in runs:
+    for run in args.runs:
+        model_name, class_weights = RUN_LABELS[run]
         logger.info("Training: %s (class weights: %s) ...", model_name, class_weights)
-        proba, elapsed = train()
-        results.append(_score(model_name, class_weights, proba, y_test, labels, elapsed))
+        proba, elapsed, rounds = trainers[run]()
+        score = _score(model_name, class_weights, proba, m.y_test, m.labels, elapsed)
+        results.append({**score, **rounds})
         logger.info("  done (%.1fs)\n", elapsed)
 
     logger.info("=" * 92)
@@ -251,10 +331,9 @@ def main() -> None:
             r["train_seconds"],
         )
 
-    out_path = Path("reports/model_comparison.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(results, indent=2) + "\n")
-    logger.info("\nResults saved to %s", out_path)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(results, indent=2) + "\n")
+    logger.info("\nResults saved to %s", args.output)
 
 
 if __name__ == "__main__":
