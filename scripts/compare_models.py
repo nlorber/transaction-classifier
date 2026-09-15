@@ -1,7 +1,7 @@
 """Compare logistic regression, XGBoost, and LightGBM on the sample dataset.
 
 Every model sees the same feature matrix and the same temporal split as
-training: the boosters early-stop on the validation block, and all models are
+training: every model early-stops on the validation block, and all models are
 scored on the held-out test block. XGBoost runs through the production wrapper
 with the production hyperparameters (``Settings``). Logistic regression and
 XGBoost are each trained without and with balanced class weights, the
@@ -15,29 +15,33 @@ Usage:
 Each result records the process's peak resident memory so far; run one model per process
 (as scripts/scaling_benchmark.py does) for a per-model figure. Every result records whether
 the model converged: boosters their best round and whether the round cap, rather than early
-stopping, ended training; logistic regression its solver iterations against the iteration
-cap. --max-rounds and --max-iter raise those caps; without them the production settings apply.
+stopping, ended training; logistic regression, which runs saga in warm-started chunks with
+the same validation early stopping, its iterations, best iteration and stop reason. --max-rounds and --max-iter raise those caps; without them the production settings apply.
 """
 
 import argparse
 import json
 import logging
+import math
 import resource
 import sys
 import time
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.sparse import spmatrix
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
     f1_score,
+    log_loss,
     top_k_accuracy_score,
 )
-from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder, MaxAbsScaler
 from sklearn.utils.class_weight import compute_sample_weight
 
@@ -80,6 +84,9 @@ def _train_xgboost(
 LIGHTGBM_ROUNDS = 500
 LIGHTGBM_PATIENCE = 40
 LOGISTIC_MAX_ITER = 1000
+# saga iterations between validation checks, and checks without improvement before stopping.
+LOGISTIC_CHUNK = 100
+LOGISTIC_PATIENCE = 3
 
 
 def _rounds(best_round: int, round_cap: int, patience: int) -> dict[str, object]:
@@ -94,12 +101,47 @@ def _rounds(best_round: int, round_cap: int, patience: int) -> dict[str, object]
     }
 
 
-def _iterations(n_iter: int, iteration_cap: int) -> dict[str, object]:
-    """Solver iterations used; a solver that reaches its cap stopped before converging."""
+def early_stopped_iterations(
+    step: Callable[[int], int],
+    val_loss: Callable[[], float],
+    snapshot: Callable[[], None],
+    max_iter: int,
+    chunk: int,
+    patience: int,
+) -> dict[str, object]:
+    """Run an iterative solver in chunks and stop the way the boosters do.
+
+    *step* runs up to the given number of further iterations and returns how many ran;
+    fewer means the solver met its own tolerance. After each chunk *val_loss* scores the
+    validation block, and *snapshot* keeps the parameters of the best chunk so far.
+    Training stops once *patience* chunks pass without improvement, when the solver meets
+    its tolerance, or at *max_iter*; only the last means it had not converged.
+    """
+    best_loss = math.inf
+    best_iteration = used = stale = 0
+    reason = "cap"
+    while used < max_iter:
+        asked = min(chunk, max_iter - used)
+        ran = step(asked)
+        used += ran
+        loss = val_loss()
+        if loss < best_loss:
+            best_loss, best_iteration, stale = loss, used, 0
+            snapshot()
+        else:
+            stale += 1
+        if ran < asked:
+            reason = "tolerance"
+            break
+        if stale >= patience:
+            reason = "validation"
+            break
     return {
-        "iterations": n_iter,
-        "iteration_cap": iteration_cap,
-        "converged": n_iter < iteration_cap,
+        "iterations": used,
+        "best_iteration": best_iteration,
+        "iteration_cap": max_iter,
+        "stop_reason": reason,
+        "converged": reason != "cap",
     }
 
 
@@ -146,6 +188,8 @@ def _train_lightgbm(
 def _train_logistic(
     X_train: spmatrix,
     y_train: np.ndarray,
+    X_val: spmatrix,
+    y_val: np.ndarray,
     X_test: spmatrix,
     balanced: bool,
     max_iter: int,
@@ -155,19 +199,38 @@ def _train_logistic(
     # saga's step size shrinks with the largest row norm, so unscaled it makes
     # almost no progress; MaxAbsScaler maps each column to [-1, 1] and keeps the
     # matrix sparse.
-    model = make_pipeline(
-        MaxAbsScaler(),
-        LogisticRegression(
-            max_iter=max_iter,
-            solver="saga",
-            class_weight="balanced" if balanced else None,
-            random_state=42,
-        ),
+    scaler = MaxAbsScaler().fit(X_train)
+    X_train, X_val, X_test = (scaler.transform(X) for X in (X_train, X_val, X_test))
+    model = LogisticRegression(
+        solver="saga",
+        class_weight="balanced" if balanced else None,
+        random_state=42,
+        warm_start=True,
     )
-    model.fit(X_train, y_train)
+    labels = np.unique(y_train)
+    best: dict[str, np.ndarray] = {}
+
+    def step(iterations: int) -> int:
+        model.max_iter = iterations
+        model.fit(X_train, y_train)
+        return int(model.n_iter_.max())
+
+    def val_loss() -> float:
+        return float(log_loss(y_val, model.predict_proba(X_val), labels=labels))
+
+    def snapshot() -> None:
+        best["coef"], best["intercept"] = model.coef_.copy(), model.intercept_.copy()
+
+    # Each chunk warm-starts from the previous coefficients, and saga warns whenever a
+    # chunk ends at its iteration count, which is what a chunk is for.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        record = early_stopped_iterations(
+            step, val_loss, snapshot, max_iter, LOGISTIC_CHUNK, LOGISTIC_PATIENCE
+        )
+    model.coef_, model.intercept_ = best["coef"], best["intercept"]
     elapsed = time.time() - t0
-    iterations = _iterations(int(model[-1].n_iter_.max()), max_iter)
-    return model.predict_proba(X_test), elapsed, iterations
+    return model.predict_proba(X_test), elapsed, record
 
 
 def _peak_rss_mb() -> float:
@@ -310,9 +373,11 @@ def main(argv: list[str] | None = None) -> None:
 
     m = build_matrices(settings, args.data)
     trainers = {
-        "lr": lambda: _train_logistic(m.X_train, m.y_train, m.X_test, False, args.max_iter),
+        "lr": lambda: _train_logistic(
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, False, args.max_iter
+        ),
         "lr-balanced": lambda: _train_logistic(
-            m.X_train, m.y_train, m.X_test, True, args.max_iter
+            m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, True, args.max_iter
         ),
         "xgb": lambda: _train_xgboost(
             settings, m.X_train, m.y_train, m.X_val, m.y_val, m.X_test, False
