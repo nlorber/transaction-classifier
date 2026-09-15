@@ -26,6 +26,9 @@ DEFAULT_SEED = 42
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "sample.csv"
 DATE_START = date(2024, 1, 1)
 DATE_END = date(2025, 12, 31)
+# ANC regulation 2022-06 applies to fiscal years opened from this date: the transfer-of-
+# charges account 791 and exceptional asset-disposal income 775 are removed.
+REFORM_DATE = date(2025, 1, 1)
 
 # Every primary account gets at least this many transactions, so each class clears
 # the loader's min_class_samples filter and reaches the training block.
@@ -183,6 +186,10 @@ ACCOUNT_CODES: dict[str, int] = {
     "761000": 19,
     "771000": 19,
     "781000": 19,
+    # Receipts whose account changed with ANC regulation 2022-06 (PRE_REFORM_ACCOUNTS)
+    "758700": 25,
+    "649000": 25,
+    "757000": 19,
 }
 
 # ---------------------------------------------------------------------------
@@ -744,6 +751,26 @@ TEMPLATES: dict[str, list[TemplateSpec]] = {
             (200, 10000),
         ),
     ],
+    # --- Receipts reclassified by ANC regulation 2022-06 ---
+    "758700": [
+        (
+            "VIR RECU {entity}",
+            "VIR SEPA NPY:{entity} LIB:INDEMNITE SINISTRE {ref8}",
+            False,
+            (500, 20000),
+        ),
+    ],
+    "649000": [
+        (
+            "VIR RECU CPAM",
+            "VIR SEPA NPY:CPAM LIB:INDEMNITES JOURNALIERES {month}",
+            False,
+            (50, 3000),
+        ),
+    ],
+    "757000": [
+        ("VIR RECU {entity}", "VIR SEPA NPY:{entity} LIB:CESSION VEHICULE", False, (1000, 25000)),
+    ],
 }
 
 # Accounts that share wording and differ only by amount: the same equipment purchase is
@@ -835,6 +862,23 @@ def line_amounts(kind: str | None, cents: int) -> list[int]:
     pairs = list(zip(shares, specs, strict=True))
     rest = cents - sum(amount for amount, line in pairs if not line.residual)
     return [rest if line.residual else amount for amount, line in pairs]
+
+
+# Account from 2025 -> account before 2025 (ANC regulation 2022-06): insurance indemnities
+# and personnel-cost reimbursements were transfers of charges (791); fixed-asset disposal
+# proceeds were exceptional income (775).
+PRE_REFORM_ACCOUNTS: dict[str, str] = {
+    "758700": "791000",
+    "649000": "791000",
+    "757000": "775000",
+}
+
+
+def booked_account(account: str, posting_date: date) -> str:
+    """The account a line books to on its posting date."""
+    if posting_date < REFORM_DATE:
+        return PRE_REFORM_ACCOUNTS.get(account, account)
+    return account
 
 
 # ---------------------------------------------------------------------------
@@ -958,11 +1002,13 @@ def sub_account_codes(n_classes: int) -> list[str]:
 @cache
 def general_codes() -> frozenset[str]:
     """Every account code the general catalogue can put in the output."""
-    return frozenset(
+    accounts = {
         line.account or primary
         for primary in ACCOUNT_CODES
         for line in split_specs(split_kind(primary))
-    )
+    }
+    reformed = accounts & set(PRE_REFORM_ACCOUNTS)
+    return frozenset(accounts | {PRE_REFORM_ACCOUNTS[account] for account in reformed})
 
 
 def lines_per_transaction(account_code: str) -> int:
@@ -971,8 +1017,8 @@ def lines_per_transaction(account_code: str) -> int:
 
 
 def transaction_floor(account_code: str) -> int:
-    """Minimum transactions for a primary account."""
-    return MIN_TRANSACTIONS
+    """Minimum transactions for a primary account; reform accounts split theirs over two codes."""
+    return MIN_TRANSACTIONS * (2 if account_code in PRE_REFORM_ACCOUNTS else 1)
 
 
 def transaction_counts(n_classes: int, n_rows: int) -> dict[str, int]:
@@ -1138,6 +1184,8 @@ def entity_pool(account_code: str) -> list[str]:
     """Counterparty names a row of this account code can carry."""
     if is_sub_account(account_code):
         return [sub_account_name(account_code)]
+    if account_code == "758700":
+        return SERVICE_ENTITIES[8:12]  # Insurers
     prefix = account_code[:3]
     if prefix in (
         "416",
@@ -1149,6 +1197,7 @@ def entity_pool(account_code: str) -> list[str]:
         "708",
         "713",
         "741",
+        "757",
         "758",
         "771",
     ):
@@ -1237,7 +1286,10 @@ def split_lines(
     kind = split_kind(primary)
     lines = []
     for spec, amount in zip(split_specs(kind), line_amounts(kind, cents), strict=True):
-        account = spec.account or recorded_account(rng, primary)
+        if spec.account is None:
+            account = recorded_account(rng, booked_account(primary, posting_date))
+        else:
+            account = booked_account(spec.account, posting_date)
         side = is_debit if spec.is_debit is None else spec.is_debit
         lines.append(Line(account, amount, side))
     return tuple(lines)

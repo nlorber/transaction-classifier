@@ -143,3 +143,26 @@ def test_capitalisation_threshold_applies_to_the_amount_before_vat(gen):
     [(*_, (capitalised_min, _))] = gen.AMOUNT_DECIDED_TEMPLATES["218000"]
     assert gen.line_amounts("vat", round(expensed_max * 100))[0] < 50_000
     assert gen.line_amounts("vat_fixed_asset", round(capitalised_min * 100))[0] >= 50_000
+
+
+def test_reform_accounts_switch_on_the_reform_date(gen, small):
+    sides = set()
+    for transaction in small:
+        if transaction.primary in gen.PRE_REFORM_ACCOUNTS:
+            before = transaction.posting_date < gen.REFORM_DATE
+            expected = (
+                gen.PRE_REFORM_ACCOUNTS[transaction.primary] if before else transaction.primary
+            )
+            assert transaction.lines[0].account_code == expected
+            sides.add(before)
+    assert sides == {True, False}
+
+
+def test_general_codes_include_both_sides_of_the_reform(gen):
+    for new, old in gen.PRE_REFORM_ACCOUNTS.items():
+        assert {new, old} <= gen.general_codes()
+
+
+def test_reform_accounts_get_a_floor_for_each_side(gen):
+    for code in gen.PRE_REFORM_ACCOUNTS:
+        assert gen.transaction_floor(code) == 2 * gen.MIN_TRANSACTIONS
