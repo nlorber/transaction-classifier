@@ -30,6 +30,9 @@ credentials.json
 /models/
 !/models/.gitkeep
 
+# Generated benchmark datasets
+/data/generated/
+
 # HPO results
 results/
 
