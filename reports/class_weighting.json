@@ -1,26 +1,26 @@
 [
   {
     "weighting": "unweighted",
-    "top1_accuracy": 0.7475,
-    "top3_accuracy": 0.9174,
-    "top5_accuracy": 0.9547,
-    "balanced_accuracy": 0.6132,
-    "rare_class_mean_recall": 0.3895,
+    "top1_accuracy": 0.7702,
+    "top3_accuracy": 0.9474,
+    "top5_accuracy": 0.9714,
+    "balanced_accuracy": 0.6648,
+    "rare_class_mean_recall": 0.495,
     "rare_classes": 25,
-    "best_iteration": 499,
+    "best_iteration": 362,
     "max_rounds": 500,
-    "train_seconds": 85.7
+    "train_seconds": 77.9
   },
   {
     "weighting": "balanced",
-    "top1_accuracy": 0.6023,
-    "top3_accuracy": 0.8987,
-    "top5_accuracy": 0.9587,
-    "balanced_accuracy": 0.6928,
-    "rare_class_mean_recall": 0.5406,
+    "top1_accuracy": 0.6596,
+    "top3_accuracy": 0.9347,
+    "top5_accuracy": 0.9687,
+    "balanced_accuracy": 0.7317,
+    "rare_class_mean_recall": 0.594,
     "rare_classes": 25,
-    "best_iteration": 499,
+    "best_iteration": 497,
     "max_rounds": 500,
-    "train_seconds": 83.0
+    "train_seconds": 91.4
   }
 ]

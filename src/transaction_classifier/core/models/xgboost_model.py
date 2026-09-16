@@ -100,7 +100,7 @@ class XGBoostModel(ClassifierBase):
         colsample_bylevel: float = 0.7,
         reg_alpha: float = 1.0,
         reg_lambda: float = 5.0,
-        min_child_weight: int = 10,
+        min_child_weight: float = 1.0,
         gamma: float = 0.5,
         max_delta_step: int = 1,
         patience: int | None = 40,

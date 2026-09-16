@@ -45,7 +45,7 @@ def test_draw_hyperparams_values_in_range():
     assert 0.4 <= params["colsample_bylevel"] <= 1.0
     assert 0.01 <= params["reg_alpha"] <= 10.0
     assert 0.1 <= params["reg_lambda"] <= 20.0
-    assert 1 <= params["min_child_weight"] <= 50
+    assert 1e-3 <= params["min_child_weight"] <= 10.0
     assert 0.0 <= params["gamma"] <= 5.0
     assert 0 <= params["max_delta_step"] <= 5
     assert 128 <= params["max_bin"] <= 512

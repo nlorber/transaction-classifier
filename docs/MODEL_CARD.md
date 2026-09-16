@@ -9,7 +9,7 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 - **Task:** multi-class classification of financial transactions into French accounting
   (Plan Comptable Général) codes.
 - **Architecture:** XGBoost gradient-boosted trees (500 estimators, depth 6, lr 0.05,
-  `min_child_weight` 10, `gamma` 0.5), one-vs-rest over **100 account classes**.
+  `min_child_weight` 1, `gamma` 0.5), one-vs-rest over **100 account classes**.
 - **Inputs / features:** three TF-IDF vectorizers (word n-grams on the `description` and
   `remarks` fields; character n-grams on combined text, capturing morphological variants
   like `COTISATION`/`COTISATIONS`) plus
@@ -26,8 +26,8 @@ and `reports/model_comparison.json`; see the [README](../README.md) for reproduc
 
 - **Primary use:** decision support for bookkeepers/accountants — surface a short ranked
   list of likely account codes for a transaction so a human selects/confirms. The top-K
-  design is deliberate: top-1 is moderate, but the correct code is in the top-3 ~90% of the
-  time and top-5 ~96% of the time (synthetic), which fits a "suggest, human confirms" loop.
+  design is deliberate: top-1 is moderate, but the correct code is in the top-3 ~93% of the
+  time and top-5 ~97% of the time (synthetic), which fits a "suggest, human confirms" loop.
 - **Intended users:** accounting/finance teams with a human in the loop.
 - **Out of scope / misuse:** autonomous ledger posting without human review; tax or legal
   compliance determinations; non-French charts of accounts; any setting where a wrong code
@@ -51,27 +51,28 @@ weights (the default).
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 0.602 |
-| Top-3 accuracy | 0.899 |
-| Top-5 accuracy | 0.959 |
-| Top-10 accuracy | 0.984 |
-| Balanced accuracy | 0.693 |
+| Top-1 accuracy | 0.660 |
+| Top-3 accuracy | 0.935 |
+| Top-5 accuracy | 0.969 |
+| Top-10 accuracy | 0.990 |
+| Balanced accuracy | 0.732 |
 
-**Read accuracy (0.602) and balanced accuracy (0.693) together:** balanced class weights push
+**Read accuracy (0.660) and balanced accuracy (0.732) together:** balanced class weights push
 the model toward rare account codes, so the macro view sits *above* the headline. Without them
-the order flips (0.748 vs 0.613, [`reports/class_weighting.json`](../reports/class_weighting.json)):
+the order flips (0.770 vs 0.665, [`reports/class_weighting.json`](../reports/class_weighting.json)):
 frequent codes are predicted well and rare ones are missed. Top-1 is a poor summary of this
 system; the top-K ranking metrics are the ones aligned with its intended use. On this synthetic
 data no classifier can exceed a Bayes-optimal top-1 of 0.850 or top-5 of 0.993 on the same rows
 ([`reports/ceiling.json`](../reports/ceiling.json)).
 
 Model comparison on the same features and split
-([`reports/model_comparison.json`](../reports/model_comparison.json)): on this synthetic data a
-scaled logistic regression outperforms XGBoost. It leads on top-1 (0.761 vs 0.748 unweighted;
-0.638 vs 0.602 with balanced weights), balanced accuracy and weighted F1, and on top-5 without
-weights (0.971 vs 0.955); with balanced weights their top-5 is level (0.957 vs 0.959). LightGBM
-trails both on top-5 and balanced accuracy. XGBoost used all 500 boosting rounds in both runs,
-and neither model was hyperparameter-searched for the comparison.
+([`reports/model_comparison.json`](../reports/model_comparison.json)): without class weights the
+three models sit within 1.5pp of each other on top-1 (LightGBM 0.777, XGBoost 0.770, logistic
+regression 0.762), with logistic regression ahead on balanced accuracy. With balanced weights —
+the shipped setting — XGBoost leads on top-1 (0.660 vs 0.638) and top-5 (0.969 vs 0.957), while
+logistic regression leads balanced accuracy (0.747 vs 0.732). The shipped run is the only one
+still bounded by its round budget (498 of 500). No model was hyperparameter-searched for the
+comparison, and these figures follow the `min_child_weight` correction in the design doc.
 
 ## Training & Evaluation Data
 
@@ -85,7 +86,7 @@ and neither model was hyperparameter-searched for the comparison.
   same rows that grade it.
 - **Class weighting:** training rows carry balanced sample weights (`balanced_class_weights`,
   default on), so rare account codes weigh as much as frequent ones in the loss. On the test
-  block this costs about 15pp top-1, with top-5 unchanged, for +8pp balanced accuracy
+  block this costs about 11pp top-1, with top-5 unchanged, for +7pp balanced accuracy
   ([`reports/class_weighting.json`](../reports/class_weighting.json)); every manifest records
   per-class recall.
 - **Known synthetic-vs-real gap:** the generator uses uniform entity distribution and random
@@ -98,7 +99,7 @@ and neither model was hyperparameter-searched for the comparison.
 ## Limitations & Ethical Considerations
 
 - **Long-tail weakness:** rare account codes are predicted least reliably (mean recall
-  0.541 on the rarest quarter of classes). Do not rely on the model for unusual or low-frequency codes without review.
+  0.594 on the rarest quarter of classes). Do not rely on the model for unusual or low-frequency codes without review.
 - **Domain & locale bound:** trained for the French PCG and French-language transaction
   conventions; it does not transfer to other accounting standards or languages.
 - **Confidence is not calibration:** reported confidences are softmax-style scores, not

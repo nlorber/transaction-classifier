@@ -363,7 +363,7 @@ All defaults are defined in `core/config.py :: Settings` and in `core/models/xgb
 |-----------|-------|-----------|
 | `reg_alpha` (L1) | 1.0 | Encourages sparsity in leaf weights. Important when TF-IDF features create thousands of weak signals -- L1 pushes irrelevant features toward zero contribution. |
 | `reg_lambda` (L2) | 5.0 | Aggressive ridge penalty. Shrinks leaf weights so no single tree overfits the handful of rows behind a rare account code. Higher than the typical default (1.0) because many codes have fewer than 50 samples. |
-| `min_child_weight` | 10 | Minimum sum of instance weight in a child node. Prevents splits on tiny subsets, which is common when rare account codes have <50 samples. |
+| `min_child_weight` | 1 | Minimum sum of hessians in a child node. On `multi:softprob` a row contributes about p(1-p) per class, so at 100 classes it is worth ~0.01 and the previous value of 10 demanded roughly a thousand rows per leaf, which blocked nearly every split (top-1 0.61 against 0.66 on the validation block). Chosen on the validation block, where 1 — XGBoost's own default — minimised log loss; below 1 the curve is flat. |
 | `gamma` | 0.5 | Minimum loss reduction for a split. Acts as a pruning threshold -- splits that don't improve loss by at least 0.5 are rejected. |
 | `max_delta_step` | 1 | Bounds the weight update per tree, keeping multi-class updates stable when a few frequent classes dominate the early gradients. |
 
@@ -377,10 +377,10 @@ Measured on the held-out test block with the production hyperparameters (`uv run
 
 | Weighting | Top-1 | Top-3 | Top-5 | Balanced accuracy | Rare-class recall |
 |---|---|---|---|---|---|
-| none | 0.7475 | 0.9174 | 0.9547 | 0.6132 | 0.3895 |
-| **balanced (default)** | **0.6023** | **0.8987** | **0.9587** | **0.6928** | **0.5406** |
+| none | 0.7702 | 0.9474 | 0.9714 | 0.6648 | 0.4950 |
+| **balanced (default)** | **0.6596** | **0.9347** | **0.9687** | **0.7317** | **0.5940** |
 
-Rare-class recall is the mean recall over the 25 test-block classes in the bottom quartile of training counts. Balanced weights trade about 15pp of top-1 and 2pp of top-3, with top-5 unchanged (+0.4pp), for +8pp balanced accuracy and +15pp recall on rare codes. The system is a top-K suggestion tool with an accountant confirming the code, so a rare account reliably reaching the shortlist is worth more than extra top-1 hits on frequent ones; set the flag to `false` where unattended top-1 automation matters more. Every manifest records `per_class_recall` on the test block, so the effect can be checked code by code.
+Rare-class recall is the mean recall over the 25 test-block classes in the bottom quartile of training counts. Balanced weights trade about 11pp of top-1 and 1pp of top-3, with top-5 unchanged (−0.3pp), for +7pp balanced accuracy and +10pp recall on rare codes. The system is a top-K suggestion tool with an accountant confirming the code, so a rare account reliably reaching the shortlist is worth more than extra top-1 hits on frequent ones; set the flag to `false` where unattended top-1 automation matters more. Every manifest records `per_class_recall` on the test block, so the effect can be checked code by code.
 
 ### Stochastic boosting
 
@@ -412,10 +412,10 @@ Accuracy on the held-out temporal test block (15% most recent transactions) with
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.6176 | 0.4876 |
-| + numeric | 0.7582 | 0.6297 |
-| + date | 0.7515 | 0.6290 |
-| + domain (all features) | 0.7455 | 0.6211 |
+| TF-IDF only | 0.6462 | 0.5675 |
+| + numeric | 0.7722 | 0.6981 |
+| + date | 0.7662 | 0.6607 |
+| + domain (all features) | 0.7668 | 0.6641 |
 
 > **Note on synthetic data:** Date and domain features show marginal or negative lift here because the synthetic generator produces uniformly distributed timestamps and simplified entity patterns. On real client data, where fiscal-period clustering and entity-specific accounting rules create learnable signals, domain features contributed +3-5% top-1 accuracy. The features are retained because the system is designed for production data characteristics, not synthetic benchmarks.
 

@@ -2,29 +2,29 @@
   {
     "feature_set": "TF-IDF only",
     "n_features": 2380,
-    "accuracy": 0.6176,
-    "balanced_accuracy": 0.4876,
-    "train_seconds": 71.3
+    "accuracy": 0.6462,
+    "balanced_accuracy": 0.5675,
+    "train_seconds": 69.4
   },
   {
     "feature_set": "+ numeric",
     "n_features": 2388,
-    "accuracy": 0.7582,
-    "balanced_accuracy": 0.6297,
-    "train_seconds": 73.7
+    "accuracy": 0.7722,
+    "balanced_accuracy": 0.6981,
+    "train_seconds": 70.6
   },
   {
     "feature_set": "+ date",
     "n_features": 2401,
-    "accuracy": 0.7515,
-    "balanced_accuracy": 0.629,
-    "train_seconds": 81.0
+    "accuracy": 0.7662,
+    "balanced_accuracy": 0.6607,
+    "train_seconds": 62.0
   },
   {
     "feature_set": "+ domain (all features)",
     "n_features": 2486,
-    "accuracy": 0.7455,
-    "balanced_accuracy": 0.6211,
-    "train_seconds": 81.1
+    "accuracy": 0.7668,
+    "balanced_accuracy": 0.6641,
+    "train_seconds": 68.6
   }
 ]

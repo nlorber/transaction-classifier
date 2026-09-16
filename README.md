@@ -14,18 +14,18 @@ Trained on **synthetic data** (10,001 bank-journal lines from 7,867 transactions
 
 | Metric | Value |
 |---|---|
-| Top-1 accuracy | 60.2% |
-| Top-3 accuracy | 89.9% |
-| Top-5 accuracy | 95.9% |
-| Top-10 accuracy | 98.4% |
-| Balanced accuracy | 69.3% |
+| Top-1 accuracy | 66.0% |
+| Top-3 accuracy | 93.5% |
+| Top-5 accuracy | 96.9% |
+| Top-10 accuracy | 99.0% |
+| Balanced accuracy | 73.2% |
 | Classes | 100 |
 | Evaluation samples | 1,501 |
 | Bayes ceiling, top-1 / top-5 | 85.0% / 99.3% |
 
 All rows are measured on the held-out temporal test block (the most recent 15% of transactions, never seen by early stopping or tuning). The ceiling row is the Bayes-optimal classifier under the generator's own sampling process, scored on the same test rows: no model can beat it in expectation, so it is the yardstick for every synthetic number above ([`scripts/estimate_ceiling.py`](scripts/estimate_ceiling.py) — committed run: [`reports/ceiling.json`](reports/ceiling.json)).
 
-See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and balanced accuracy matter more. Training uses balanced class weights, which trade about 15pp of top-1 for +8pp balanced accuracy and +15pp recall on rare codes, with top-5 unchanged ([measured](docs/DESIGN.md#class-imbalance)).
+See the [Model Card](docs/MODEL_CARD.md) for intended use, factors, limitations, and drift/maintenance guidance. Top-1 is a weak summary of this system — it is designed as a ranked top-K suggestion tool with a human in the loop, which is why the top-3/top-5 numbers and balanced accuracy matter more. Training uses balanced class weights, which trade about 11pp of top-1 for +7pp balanced accuracy and +10pp recall on rare codes, with top-5 unchanged ([measured](docs/DESIGN.md#class-imbalance)).
 
 ### Feature Ablation
 
@@ -33,10 +33,10 @@ Cumulative accuracy on the held-out temporal test block. Each row adds one featu
 
 | Feature set | Accuracy | Balanced Accuracy |
 |---|---|---|
-| TF-IDF only | 0.6176 | 0.4876 |
-| + numeric | 0.7582 | 0.6297 |
-| + date | 0.7515 | 0.6290 |
-| + domain (all features) | 0.7455 | 0.6211 |
+| TF-IDF only | 0.6462 | 0.5675 |
+| + numeric | 0.7722 | 0.6981 |
+| + date | 0.7662 | 0.6607 |
+| + domain (all features) | 0.7668 | 0.6641 |
 
 Date and domain features show marginal or negative lift on synthetic data because the generator produces uniformly distributed timestamps and simplified entity patterns. On real client data with seasonal patterns and consistent entity naming, these features provide meaningful signal. Reproduce with `uv run python scripts/eval_ablation.py` — committed run: [`reports/feature_ablation.json`](reports/feature_ablation.json).
 
@@ -46,13 +46,13 @@ Same feature matrix, same temporal split, scored on the held-out test block. XGB
 
 | Model | Class weights | Top-1 | Top-5 | Balanced accuracy | F1 (weighted) | Train time |
 |---|---|---|---|---|---|---|
-| Logistic Regression | none | 0.7608 | 0.9714 | 0.6970 | 0.7500 | 15.7s |
-| Logistic Regression | balanced | 0.6382 | 0.9574 | 0.7442 | 0.6304 | 82.4s |
-| XGBoost | none | 0.7475 | 0.9547 | 0.6132 | 0.7252 | 80.0s |
-| **XGBoost** | **balanced** | **0.6023** | **0.9587** | **0.6928** | **0.5838** | **83.8s** |
-| LightGBM | none | 0.7009 | 0.9101 | 0.5248 | 0.6700 | 45.3s |
+| Logistic Regression | none | 0.7615 | 0.9714 | 0.6972 | 0.7505 | 14.2s |
+| Logistic Regression | balanced | 0.6376 | 0.9574 | 0.7470 | 0.6298 | 77.0s |
+| XGBoost | none | 0.7702 | 0.9714 | 0.6648 | 0.7553 | 78.3s |
+| **XGBoost** | **balanced** | **0.6596** | **0.9687** | **0.7317** | **0.6525** | **88.4s** |
+| LightGBM | none | 0.7768 | 0.9680 | 0.6814 | 0.7634 | 58.1s |
 
-On this synthetic data a scaled logistic regression outperforms XGBoost: it leads on top-1, balanced accuracy and weighted F1 at either weighting, leads on top-5 without weights, and is the fastest to train without weights. With balanced weights their top-5 is level (0.9574 vs 0.9587). XGBoost used all 500 of its boosting rounds in both runs, so its rows measure the production round budget rather than a converged model; neither model has been hyperparameter-searched for this comparison. Reproduce with `uv run python scripts/compare_models.py` — committed run: [`reports/model_comparison.json`](reports/model_comparison.json).
+Without class weights the three models land within 1.5pp of each other on top-1 — LightGBM 0.7768, XGBoost 0.7702, logistic regression 0.7615 — and logistic regression leads on balanced accuracy. With balanced weights, the shipped configuration, XGBoost leads logistic regression on top-1 (0.6596 vs 0.6376) and top-5 (0.9687 vs 0.9574), while logistic regression keeps the better balanced accuracy (0.7470 vs 0.7317). The shipped run is the only one still bounded by its budget, using 498 of its 500 rounds, where LightGBM converged at round 140 and logistic regression at 900 of 1,000 iterations. No model was hyperparameter-searched for this comparison, and these figures follow the `min_child_weight` correction described in [DESIGN.md](docs/DESIGN.md#8-hyperparameter-defaults-rationale). Reproduce with `uv run python scripts/compare_models.py` — committed run: [`reports/model_comparison.json`](reports/model_comparison.json).
 
 ![Top-K Accuracy](reports/topk_accuracy.png)
 
@@ -115,7 +115,7 @@ flowchart LR
 
 ## Design Decisions
 
-**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (100 classes on the default sample, long-tail distribution). Gradient-boosted trees handle sparse, mixed-type features without the architecture tuning that neural nets require, and imbalance is handled with balanced per-row sample weights rather than resampling — trading about 15pp of top-1 for +8pp balanced accuracy and +15pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)). Training on the default sample takes about a minute, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
+**Why XGBoost over neural approaches.** The input is structured tabular data with high cardinality categorical features and class imbalance (100 classes on the default sample, long-tail distribution). Gradient-boosted trees handle sparse, mixed-type features without the architecture tuning that neural nets require, and imbalance is handled with balanced per-row sample weights rather than resampling — trading about 11pp of top-1 for +7pp balanced accuracy and +10pp recall on rare codes ([measured](docs/DESIGN.md#class-imbalance)). Training on the default sample takes about a minute, which matters when retraining on a schedule. Feature importance is directly interpretable for debugging misclassifications with domain experts.
 
 **Why TF-IDF + domain features, not embeddings.** French accounting transaction text is formulaic: `URSSAF COTISATIONS`, `PRLV SEPA CPY:FR123`. Pattern-based features (entity detection, regex-extracted markers) outperform dense embeddings because the signal is in known keywords and structural patterns, not semantic meaning. TF-IDF character n-grams capture morphological variations (e.g., `COTISATION` vs `COTISATIONS`) without a pretrained language model. The feature space is sparse but highly discriminative for this domain.
 

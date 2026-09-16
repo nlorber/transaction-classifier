@@ -165,7 +165,9 @@ def _train_lightgbm(
         subsample=0.7,
         colsample_bytree=0.7,
         reg_lambda=5.0,
-        min_child_weight=10,
+        # LightGBM's own default: the same quantity as XGBoost's min_child_weight, on
+        # the scale its library uses. A threshold of 10 starves multiclass splits.
+        min_child_weight=1e-3,
         num_class=n_classes,
         objective="multiclass",
         class_weight="balanced" if balanced else None,

@@ -43,7 +43,7 @@ def _train_xgboost(
         subsample=0.7,
         colsample_bytree=0.7,
         reg_lambda=5.0,
-        min_child_weight=10,
+        min_child_weight=1,
         gamma=0.5,
         tree_method="hist",
         objective="multi:softprob",

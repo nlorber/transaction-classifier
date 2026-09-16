@@ -24,7 +24,10 @@ def draw_hyperparams(trial: optuna.Trial) -> dict[str, Any]:
         "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.4, 1.0),
         "reg_alpha": trial.suggest_float("reg_alpha", 0.01, 10.0, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 20.0, log=True),
-        "min_child_weight": trial.suggest_int("min_child_weight", 1, 50),
+        # A leaf's minimum sum of hessians. On multi:softprob a row is worth about
+        # p(1-p) per class, so the useful range sits below 1 and an integer range
+        # could never reach it.
+        "min_child_weight": trial.suggest_float("min_child_weight", 1e-3, 10.0, log=True),
         "gamma": trial.suggest_float("gamma", 0.0, 5.0),
         "max_delta_step": trial.suggest_int("max_delta_step", 0, 5),
         "max_bin": trial.suggest_int("max_bin", 128, 512, step=64),
