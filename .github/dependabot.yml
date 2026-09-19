@@ -1,7 +1,8 @@
 version: 2
 updates:
-  # Minor and patch bumps arrive as one monthly PR. Major bumps are migrations,
-  # taken by hand. An update-types ignore never blocks a security update.
+  # Minor and patch bumps arrive as one monthly PR, security fixes as one
+  # grouped PR. Major bumps are migrations, taken by hand. An update-types
+  # ignore never blocks a security update.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
@@ -10,6 +11,9 @@ updates:
       dependencies:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
