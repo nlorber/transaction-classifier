@@ -37,9 +37,8 @@ all = [
     "lightgbm>=4.0,<5",
 ]
 dev = [
-    "pytest>=8.0.0,<9",
+    "pytest>=9.0.3,<10",
     "pytest-cov>=5.0.0,<6",
-    "pytest-asyncio>=0.24.0,<1",
     "httpx>=0.28.0,<1",
     "ruff>=0.4.0,<1",
     "mypy>=1.8.0,<2",
