@@ -17,11 +17,11 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      # Both need numpy 2, which pyproject.toml caps below 2: shap 0.51 requires
+      # Both need numpy 2, which pyproject.toml caps below 2: shap 0.50 requires
       # it, and pandas-stubs 3.0.5 types astype() through np.bool, which numpy 1
       # lacks. Lift with the numpy 2 migration.
       - dependency-name: "shap"
-        versions: [">=0.51"]
+        versions: [">=0.50"]
       - dependency-name: "pandas-stubs"
         versions: [">=3.0.5"]
   - package-ecosystem: "github-actions"
